@@ -1,45 +1,56 @@
 // ============================================================================
 // Walk-Off Sports Cards & Comics — Checkout Worker
 // Automatic-capture Stripe flow + KV-backed orders & short-lived item reservations
-// + Live Supabase-backed inventory display and write-back decrement
+// + Live inventory display sourced from the vending software's own Worker
+// (still-resonance-4f87, repo squeebmike/ArSca) via a Service Binding
 // ============================================================================
 //
-// NEW IN THIS VERSION — replace the whole file, then:
-// 1. Confirm/set these two Variables (not secrets, plain text is fine):
+// SETUP:
+// 1. Confirm/set these Variables (not secrets, plain text is fine):
 //      WO_STORE_ID            = 0f9dd4bc-42a7-487e-a972-2905d24513e9
 //      WO_INVENTORY_API_BASE  = https://still-resonance-4f87.swarnerauto.workers.dev
 //    (defaults below match these — only add them if you want to override without redeploying)
-// 2. Confirm these two Secrets are already set (you said you added them):
-//      SUPABASE_URL
-//      SUPABASE_SERVICE_ROLE_KEY
-// 3. After deploying, visit:
-//      https://<your-worker-subdomain>.workers.dev/api/debug-supabase?token=YOUR_WO_ADMIN_TOKEN
-//    to confirm both the Supabase connection AND the inventory API base are working
-//    before relying on this in production.
+// 2. Add a Service Binding (Cloudflare dashboard -> wo-checkout -> Settings ->
+//    Bindings -> Add -> Service binding):
+//      Variable name: INVENTORY_API
+//      Service:       still-resonance-4f87
+//      Environment:   production
+//    This is required -- fetchInventoryApi() throws a clear error if it's missing.
+// 3. Confirm these Secrets are already set:
+//      SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+//    (still needed for order writes, membership/pledge, and the stock
+//    decrement-on-sale side effect -- just not for reading the live catalog
+//    or computing price anymore, see FIX (2026-08-03) below.)
 // 4. On any Webflow page, drop a plain HTML embed containing:
 //      <div id="wo-live-shop"></div>
 //    and it will fill in with live inventory automatically.
 //
-// FIX (2026-07-25): handleInventoryList now reads Supabase directly instead
-// of fetching the vending software's HTTP API. Cross-worker fetches between
-// two *.workers.dev subdomains are blocked by Cloudflare (Error 1042) — that
-// was the root cause of the 502/404 on /api/inventory. This also requires
-// SUPABASE_URL to be a clean project URL (https://<project-ref>.supabase.co,
-// no trailing slash, no /rest/v1 suffix) — fix that secret first if
-// /api/debug-supabase still shows supabaseReadTest: "failed".
+// FIX (2026-07-25): handleInventoryList used to read Supabase directly
+// instead of fetching the vending software's HTTP API, because Cloudflare
+// blocks direct fetch() calls between two *.workers.dev subdomains (Error
+// 1042) -- that was the root cause of the 502/404 on /api/inventory at the
+// time. Superseded by the FIX (2026-08-03) below, which solves the same
+// problem a different way.
 //
 // FIX (2026-07-27): brought pricing in line with the vending software's
-// dashboard/storefront rules:
-//   - Price = market price, unless a floor (minPrice) or a manual override
-//     (priceOverride) applies, whichever of those is higher than market wins.
-//   - Market-tracked prices round UP to the whole dollar (e.g. $7.01 -> $8).
-//   - On-hold ("hold") and lost/damaged items are excluded from the live
-//     listing here too (previously only excluded on the vending software's
-//     own storefront route, not here).
-//   - handleCreateIntent now re-verifies price server-side against Supabase
-//     right before charging, instead of trusting whatever price was sitting
-//     in the buyer's cart — closes a gap where a stale or tampered cart
-//     could charge the wrong amount.
+// dashboard/storefront rules (market price, floor, override, signature
+// value not yet included -- see FIX (2026-08-03) below for why that gap
+// existed and how it's closed).
+//
+// FIX (2026-08-03): removed this Worker's own duplicate inventory query and
+// price formula entirely. It had silently drifted from the real one on the
+// vending software's side -- signature-value pricing was never added here,
+// so a signed item both displayed AND was charged at the wrong (lower)
+// price on walkoffsc.com, and there was no comic book detail data at all.
+// handleInventoryList and handleCreateIntent's stock/price verification now
+// both call the vending software's /public/storefront and
+// /public/storefront/item routes via a Cloudflare Service Binding
+// (INVENTORY_API, see SETUP above) instead of reading Supabase and
+// recomputing price here. A Service Binding is a same-account Worker-to-
+// Worker call, not a public internet fetch, so it isn't subject to the
+// *.workers.dev restriction that caused the 2026-07-25 workaround --
+// there's no reason left for a second implementation of "what's for sale
+// and at what price" to exist.
 // ============================================================================
 
 var ALLOWED_ORIGINS = [
@@ -158,6 +169,33 @@ var INVENTORY_CACHE_TTL_SECONDS = 45; // short cache so stock feels live but we'
 function getStoreId(env) { return env.WO_STORE_ID || DEFAULT_STORE_ID; }
 function getInventoryApiBase(env) { return (env.WO_INVENTORY_API_BASE || DEFAULT_INVENTORY_API_BASE).replace(/\/$/, ""); }
 
+// Calls the vending software's own public-storefront routes (still-resonance-4f87,
+// repo squeebmike/ArSca) via a Cloudflare Service Binding instead of reading
+// Supabase directly here. A Service Binding is a same-account Worker-to-Worker
+// call, not a public fetch, so it isn't subject to the *.workers.dev
+// cross-fetch block (Error 1042) that forced this Worker into its own
+// duplicate Supabase query and price formula back on 2026-07-25 -- that
+// duplicate was never updated when signature-value pricing and comic
+// details were added on the other side, so signed items silently displayed
+// AND were charged at the wrong price on walkoffsc.com. Now there's exactly
+// one place price/stock rules live; this Worker just calls it.
+//
+// Requires a Service Binding named INVENTORY_API pointed at still-resonance-4f87
+// (Cloudflare dashboard -> wo-checkout -> Settings -> Bindings -> Add -> Service binding).
+async function fetchInventoryApi(env, path) {
+  if (!env.INVENTORY_API) {
+    const err = new Error("INVENTORY_API service binding is not configured -- add it in Cloudflare dashboard -> wo-checkout -> Settings -> Bindings -> Service binding -> still-resonance-4f87");
+    err.status = 501;
+    throw err;
+  }
+  const url = getInventoryApiBase(env) + path;
+  const res = await env.INVENTORY_API.fetch(url);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  return { ok: res.ok, status: res.status, data: data || {} };
+}
+
 function getShippingTiers(env) {
   if (env.WO_SHIPPING_TIERS) {
     try {
@@ -270,21 +308,11 @@ function roundUpToDollar(value) {
 }
 
 // Same price rule as the vending software: market price, unless there's a
-// floor (minPrice) or a manually-entered override (priceOverride) from the
-// dashboard's edit screen -- whichever of those is higher than market wins.
-// Shared by the live inventory listing and by checkout's server-side price
-// re-verification, so both always agree on the real price for an item.
-function computeVerifiedItemPrice(rowData) {
-  const rowMarket = Number(rowData.market || rowData.marketPrice || rowData.rawMarketPrice || 0) || 0;
-  const rowBase = Number(rowData.priceOverride || 0) || roundUpToDollar(rowMarket);
-  return Math.max(rowBase, Number(rowData.minPrice || 0) || 0);
-}
-
-// Inventory statuses that mean "not actually for sale right now" -- kept in
-// sync with the same exclusion list the vending software's own storefront
-// route uses (on-hold and lost/damaged items must never be purchasable here
-// either, even if they're still physically in the Supabase row).
-var UNAVAILABLE_STATUSES = ["sold", "archived", "returned", "deleted", "sold_pending_pickup", "sold_pending_shipment", "hold", "lost_damaged"];
+// Price and availability now come from the vending software's own
+// /public/storefront/item route (see fetchInventoryApi above) instead of a
+// duplicate Supabase query + price formula here -- that duplicate is what
+// let signature-value pricing silently drift out of sync in the first
+// place. There's exactly one place those rules live now.
 
 async function isReserved(env, productId, reservationId) {
   const val = await env.WO_RESERVATIONS.get("item:" + productId);
@@ -336,33 +364,32 @@ async function handleCreateIntent(request, env, origin) {
     }
   }
 
-  // Server-side stock + PRICE check against real Supabase inventory. Never
-  // trust qty *or price* from the client cart: nothing on the frontend
-  // enforces either against real data. A stale cart from before stock or a
-  // price changed, or a tampered cart in browser storage, could otherwise
-  // both oversell an item and charge the wrong amount. This overwrites
-  // it.price with the freshly-verified server price before totals/the
+  // Server-side stock + PRICE check against the vending software's own
+  // real-time storefront data (via the INVENTORY_API Service Binding --
+  // see fetchInventoryApi above), not a duplicate Supabase query here.
+  // Never trust qty *or price* from the client cart: nothing on the
+  // frontend enforces either against real data. A stale cart from before
+  // stock or a price changed, or a tampered cart in browser storage, could
+  // otherwise both oversell an item and charge the wrong amount. This
+  // overwrites it.price with the freshly-verified server price (which
+  // already includes signature value, floor, and override -- the exact
+  // same formula the item's own product page shows) before totals/the
   // Stripe amount are computed below, so what's actually charged always
   // matches current real inventory data -- not whatever price the item
   // happened to show when it was added to the cart.
-  if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-    for (const it of items) {
-      if (!it.id || getRunDropKey(it.id)) continue; // run-drop items aren't in Supabase inventory_items; capped separately above
-      const qty = Math.max(1, parseInt(it.qty, 10) || 1);
-      try {
-        const rows = await supabaseFetch(env, "inventory_items?id=eq." + encodeURIComponent(it.id) + "&select=id,data,status&limit=1");
-        const row = Array.isArray(rows) ? rows[0] : null;
-        const rowData = row ? (row.data || {}) : {};
-        const available = row ? Number(rowData.quantity ?? rowData.qty ?? 1) : 0;
-        const invStatus = String(rowData.lifecycle || rowData.status || (row && row.status) || "in_stock").toLowerCase();
-        if (!row || available < qty || UNAVAILABLE_STATUSES.indexOf(invStatus) !== -1 || rowData.soldAt || rowData.archivedAt) {
-          return json({ error: `"${it.name || it.id}" doesn't have ${qty} available. Refresh your cart and try again.` }, 409, corsHeaders(origin));
-        }
-        it.price = computeVerifiedItemPrice(rowData);
-      } catch (e) {
-        console.error("[WO] Stock check failed for", it.id, e.message);
-        return json({ error: "Could not verify stock. Please try again." }, 502, corsHeaders(origin));
+  for (const it of items) {
+    if (!it.id || getRunDropKey(it.id)) continue; // run-drop items aren't in Supabase inventory_items; capped separately above
+    const qty = Math.max(1, parseInt(it.qty, 10) || 1);
+    try {
+      const result = await fetchInventoryApi(env, "/public/storefront/item?store_id=" + encodeURIComponent(getStoreId(env)) + "&id=" + encodeURIComponent(it.id));
+      const item = result.data && result.data.item;
+      if (!result.ok || !result.data || !result.data.ok || !item || Number(item.quantity || 0) < qty) {
+        return json({ error: `"${it.name || it.id}" doesn't have ${qty} available. Refresh your cart and try again.` }, 409, corsHeaders(origin));
       }
+      it.price = Number(item.price || 0);
+    } catch (e) {
+      console.error("[WO] Stock check failed for", it.id, e.message);
+      return json({ error: "Could not verify stock. Please try again." }, 502, corsHeaders(origin));
     }
   }
 
@@ -677,47 +704,18 @@ async function handleInventoryList(request, env, origin) {
   } catch (e) {}
 
   try {
-    const settingsRows = await supabaseFetch(env, "store_settings?store_id=eq." + encodeURIComponent(storeId) + "&select=receipt_settings&limit=1");
-    const cfg = (Array.isArray(settingsRows) && settingsRows[0] && settingsRows[0].receipt_settings) || {};
-    if (cfg.storefrontEnabled !== true) {
-      return json({ ok: false, error: "Storefront is not published" }, 404, corsHeaders(origin));
+    // Straight pass-through of the vending software's own /public/storefront
+    // list (via the INVENTORY_API Service Binding -- see fetchInventoryApi
+    // above), not a duplicate Supabase query + price formula here. This is
+    // also where comic/signature/photo data now comes from -- fields this
+    // Worker never had before because it never asked the real source for
+    // them.
+    const result = await fetchInventoryApi(env, "/public/storefront?store_id=" + encodeURIComponent(storeId));
+    if (!result.ok || !result.data || !result.data.ok) {
+      const message = (result.data && result.data.error) || "Storefront is not published";
+      return json({ ok: false, error: message }, result.status || 502, corsHeaders(origin));
     }
-
-    const rows = await supabaseFetch(env, "inventory_items?store_id=eq." + encodeURIComponent(storeId) + "&select=id,data,status&order=updated_at.desc&limit=1000");
-
-    const cleanText = function (v, n) { return String(v == null ? "" : v).trim().slice(0, n || 240); };
-    const cleanUrl = function (v) { var s = cleanText(v, 1000); return /^https?:\/\//i.test(s) || /^data:image\//i.test(s) ? s : ""; };
-
-    var items = (rows || []).map(function (row) {
-      var d = row.data || {};
-      var rawQty = d.quantity != null ? d.quantity : (d.qty != null ? d.qty : 1);
-      var quantity = Number.isFinite(Number(rawQty)) ? Number(rawQty) : 1;
-      var inventoryStatus = cleanText(d.lifecycle || d.status || row.status || "in_stock", 40).toLowerCase();
-      // Same price rule as the vending software's own storefront: market
-      // price (rounded up to the whole dollar), unless there's a floor
-      // (minPrice) or a manual override (priceOverride) from the dashboard's
-      // edit screen, in which case the higher of those vs. the floor wins.
-      var price = computeVerifiedItemPrice(d);
-      return {
-        id: cleanText(row.id, 80),
-        name: cleanText(d.name || d.title || "Item"),
-        category: cleanText(d.category || d.type || "Other", 80),
-        variant: cleanText([d.set || d.series || "", d.year || "", d.variant || d.finish || "", d.condition || d.grade || ""].filter(Boolean).join(" · "), 200),
-        price: price,
-        market: Number(d.market || d.marketPrice || d.rawMarketPrice || 0) || 0,
-        image: cleanUrl(d.image || d.img || d.imageUrl || d.image_url || d.photo),
-        isSealed: !!d.is_sealed,
-        gradingCompany: cleanText(d.grading_company || d.grader || "", 40),
-        quantity: quantity,
-        inventoryStatus: inventoryStatus,
-        soldAt: d.soldAt || d.sold_at || "",
-        archivedAt: d.archivedAt || "",
-        updatedAt: row.updated_at || ""
-      };
-    }).filter(function (i) {
-      return i.name && i.quantity > 0 && !i.soldAt && !i.archivedAt &&
-        UNAVAILABLE_STATUSES.indexOf(i.inventoryStatus) === -1;
-    });
+    var items = result.data.items || [];
 
     var payload = JSON.stringify({ ok: true, items: items });
     try { await env.WO_RESERVATIONS.put(cacheKey, payload, { expirationTtl: INVENTORY_CACHE_TTL_SECONDS }); } catch (e) {}
@@ -1240,6 +1238,73 @@ function escapeHtml(s){
   });
 }
 
+// Book details/story/creators block for comic items -- the vending
+// software only attaches 'comic' when the item actually has a saved Metron
+// record, so this renders nothing otherwise. Mirrors the same section on
+// the vending software's own storefront.html.
+function woComicDetailHtml(c){
+  if(!c) return '';
+  var stats = [['Series', c.seriesName], ['Issue #', c.number], ['Publisher', c.publisher], ['Cover date', c.coverDate], ['Series began', c.seriesYearBegan]].filter(function(pair){ return pair[1]; });
+  var credits = (c.credits||[]).map(function(cr){ return [cr.creator, (cr.roles||[]).join(', ')].filter(Boolean).join(' \\u2014 '); }).join('; ');
+  var hasContent = stats.length || c.description || (c.writers||[]).length || (c.artists||[]).length || (c.coverArtists||[]).length;
+  if(!hasContent) return '';
+  var html = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">';
+  html += '<div style="font-weight:700;font-size:13px;margin-bottom:8px;">Book Details, Story &amp; Creators</div>';
+  if(stats.length){
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-bottom:10px;">';
+    stats.forEach(function(pair){
+      html += '<div style="background:#f5f7fa;border-radius:6px;padding:6px 8px;"><div style="font-size:8px;color:#888;text-transform:uppercase;">'+escapeHtml(pair[0])+'</div><div style="font-size:12px;font-weight:600;">'+escapeHtml(String(pair[1]))+'</div></div>';
+    });
+    html += '</div>';
+  }
+  if(c.description) html += '<div style="font-size:12px;line-height:1.6;margin-bottom:10px;">'+escapeHtml(c.description)+'</div>';
+  if((c.writers||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;"><b>Writer:</b> '+escapeHtml(c.writers.join(', '))+'</div>';
+  if((c.artists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;"><b>Artist:</b> '+escapeHtml(c.artists.join(', '))+'</div>';
+  if((c.coverArtists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;"><b>Cover artist:</b> '+escapeHtml(c.coverArtists.join(', '))+'</div>';
+  if(credits) html += '<div style="font-size:11px;color:#888;margin-top:6px;">'+escapeHtml(credits)+'</div>';
+  html += '</div>';
+  return html;
+}
+
+// Live-inventory cards used to have nothing to click but "Add to Cart" --
+// no detail view at all, so signature status and comic info (both now
+// present on 'item' since renderLiveInventory calls the real
+// /public/storefront data via the vending software's Worker) had nowhere
+// to show. This is a lightweight in-page modal instead of a real detail
+// page/route, so it works regardless of whether this item also happens to
+// have a mirrored Webflow CMS record.
+function openWoLiveItemDetail(item){
+  var existing = document.getElementById('wo-live-detail-overlay');
+  if(existing) existing.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'wo-live-detail-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 12px;';
+  overlay.addEventListener('click', function(e){ if(e.target === overlay) overlay.remove(); });
+  var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
+  var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
+  var card = document.createElement('div');
+  card.style.cssText = 'width:100%;max-width:520px;background:#fff;border-radius:14px;padding:20px;position:relative;';
+  card.innerHTML =
+    '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1;">&times;</button>' +
+    (item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;max-height:340px;object-fit:contain;border-radius:8px;background:#f2f2f2;">' : '') +
+    '<div style="font-size:11px;color:#888;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
+    '<div style="font-size:20px;font-weight:800;margin-top:4px;">'+escapeHtml(item.name)+'</div>' +
+    (metaLine ? '<div style="font-size:12px;color:#888;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
+    (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
+    '<div style="font-size:22px;font-weight:800;margin-top:10px;">$'+Number(item.price||0).toFixed(2)+'</div>' +
+    (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#a32030;font-weight:700;">Only '+stockQty+' left</div>' : '') +
+    '<button data-wo-add-to-cart style="margin-top:14px;width:100%;padding:12px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+    woComicDetailHtml(item.comic);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  card.querySelector('[data-wo-close-detail]').addEventListener('click', function(){ overlay.remove(); });
+  card.querySelector('[data-wo-add-to-cart]').addEventListener('click', function(e){
+    e.preventDefault();
+    addToCart({ id:item.id, name:item.name, price:Number(item.price||0), image:item.image||'', available: stockQty || 1 });
+    overlay.remove();
+  });
+}
+
 function renderLiveInventory(){
   var mount = document.getElementById('wo-live-shop');
   if(!mount) return;
@@ -1259,16 +1324,22 @@ function renderLiveInventory(){
       items.forEach(function(item){
         var card = document.createElement('div');
         card.className = 'wo-live-card';
-        card.style.cssText = 'border:1px solid #eee;border-radius:12px;overflow:hidden;background:#fff;display:flex;flex-direction:column;';
+        card.style.cssText = 'border:1px solid #eee;border-radius:12px;overflow:hidden;background:#fff;display:flex;flex-direction:column;cursor:pointer;';
         var imgHtml = item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;aspect-ratio:1/1;object-fit:cover;">' : '<div style="width:100%;aspect-ratio:1/1;background:#f2f2f2;"></div>';
         var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
         var stockLine = stockQty > 0
           ? ('<div style="font-size:11px;color:' + (stockQty <= 3 ? '#a32030' : '#888') + ';font-weight:' + (stockQty <= 3 ? '700' : '400') + ';">' + (stockQty <= 3 ? 'Only ' + stockQty + ' left' : stockQty + ' in stock') + '</div>')
           : '';
+        // The public-storefront payload carries set/year/variant/condition
+        // as separate fields (not a pre-joined display string), so build
+        // the meta line here the same way the detail modal does.
+        var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
+        var signedBadge = item.isSigned ? '<div style="font-size:10px;font-weight:700;color:#92400e;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '';
         card.innerHTML = imgHtml +
           '<div style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
           '<div style="font-size:14px;font-weight:600;">'+escapeHtml(item.name)+'</div>' +
-          (item.variant ? '<div style="font-size:12px;color:#888;">'+escapeHtml(item.variant)+'</div>' : '') +
+          (metaLine ? '<div style="font-size:12px;color:#888;">'+escapeHtml(metaLine)+'</div>' : '') +
+          signedBadge +
           stockLine +
           '<div style="font-size:15px;font-weight:700;margin-top:auto;">$'+Number(item.price||0).toFixed(2)+'</div>' +
           '<button data-wo-add-to-cart style="padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
@@ -1280,6 +1351,10 @@ function renderLiveInventory(){
           '<span class="wo-d-category">'+escapeHtml(item.category||'')+'</span>' +
           '<span class="wo-d-qty">'+(stockQty || 1)+'</span>' +
           '</div></div>';
+        card.addEventListener('click', function(e){
+          if(e.target.closest('[data-wo-add-to-cart]')) return;
+          openWoLiveItemDetail(item);
+        });
         grid.appendChild(card);
       });
       mount.appendChild(grid);
