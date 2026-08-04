@@ -1,0 +1,21 @@
+{
+  "name": "wo-checkout",
+  "main": "worker.js",
+  "compatibility_date": "2026-05-19",
+  "kv_namespaces": [
+    {
+      "binding": "WO_RESERVATIONS",
+      "id": "REPLACE_WITH_WO_RESERVATIONS_NAMESPACE_ID"
+    },
+    {
+      "binding": "WO_ORDERS",
+      "id": "REPLACE_WITH_WO_ORDERS_NAMESPACE_ID"
+    }
+  ],
+  "services": [
+    {
+      "binding": "INVENTORY_API",
+      "service": "still-resonance-4f87"
+    }
+  ]
+}

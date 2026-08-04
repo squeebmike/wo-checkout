@@ -1,0 +1,151 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - worker.js
+      - wrangler.jsonc
+      - .github/workflows/deploy-worker.yml
+  workflow_dispatch:
+
+jobs:
+  deploy-worker:
+    name: Validate, deploy, and probe Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER_URL: https://wo-checkout.swarnerauto.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate required GitHub secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error title=Missing GitHub secret::CLOUDFLARE_API_TOKEN is undefined. Add it in repo Settings > Secrets and variables > Actions."
+            missing=1
+          fi
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error title=Missing GitHub secret::CLOUDFLARE_ACCOUNT_ID is undefined. Add it in repo Settings > Secrets and variables > Actions."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Cloudflare secrets are present."
+
+      - name: Syntax check worker.js (outer script + embedded /wo-cart.js template)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check worker.js
+          node <<'NODE'
+          const fs = require('fs');
+          const src = fs.readFileSync('worker.js', 'utf8');
+          const m = src.match(/function buildCartScript\([\s\S]*?\n`;\n}/);
+          if (!m) throw new Error('Could not locate buildCartScript() to syntax-check the embedded /wo-cart.js template');
+          fs.writeFileSync('/tmp/buildCartScript.js', m[0] + '\nmodule.exports = buildCartScript;\n');
+          const buildCartScript = require('/tmp/buildCartScript.js');
+          const rendered = buildCartScript('pk_test_dummy', 'https://example.com', '[]');
+          fs.writeFileSync('/tmp/wo-cart-rendered.js', rendered);
+          console.log('Embedded /wo-cart.js template rendered:', rendered.length, 'chars');
+          NODE
+          node --check /tmp/wo-cart-rendered.js
+          echo "worker.js and its embedded /wo-cart.js template both parse cleanly."
+
+      - name: Validate Wrangler config
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const config = JSON.parse(fs.readFileSync('wrangler.jsonc', 'utf8'));
+          const required = [];
+          if (!config.name) required.push('name');
+          if (config.name !== 'wo-checkout') throw new Error(`Worker name mismatch: ${config.name}`);
+          if (!config.main) required.push('main');
+          if (!config.compatibility_date) required.push('compatibility_date');
+          if (!Array.isArray(config.kv_namespaces) || config.kv_namespaces.length !== 2) required.push('kv_namespaces');
+          if (required.length) throw new Error('Missing required wrangler fields: ' + required.join(', '));
+          for (const binding of ['WO_RESERVATIONS', 'WO_ORDERS']) {
+            const kv = config.kv_namespaces.find(k => k.binding === binding);
+            if (!kv) throw new Error(`Missing ${binding} namespace binding`);
+            if (!kv.id || /replace_with|placeholder|changeme|todo/i.test(kv.id)) {
+              throw new Error(`${binding} namespace id is missing or still a placeholder -- fill in its real Cloudflare KV namespace id in wrangler.jsonc before this can deploy.`);
+            }
+          }
+          const svc = (config.services || []).find(s => s.binding === 'INVENTORY_API');
+          if (!svc || svc.service !== 'still-resonance-4f87') throw new Error('Missing or misconfigured INVENTORY_API service binding (must point at still-resonance-4f87)');
+          console.log(JSON.stringify({
+            workerName: config.name,
+            main: config.main,
+            compatibilityDate: config.compatibility_date,
+            kvBindings: config.kv_namespaces.map(k => ({ binding: k.binding, id: k.id })),
+            serviceBindings: config.services.map(s => ({ binding: s.binding, service: s.service })),
+          }, null, 2));
+          NODE
+          npx wrangler deploy --config wrangler.jsonc --dry-run
+
+      - name: Validate Wrangler authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler whoami
+
+      - name: Deploy Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --keep-vars: this repo's wrangler.jsonc intentionally does not
+          # declare vars (WO_STORE_ID, WO_ADMIN_TOKEN, WO_SITE_URL,
+          # STRIPE_PUBLISHABLE_KEY, etc.) or secrets (STRIPE_SECRET_KEY,
+          # SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) -- those already exist
+          # on the live Worker from before this repo existed, and --keep-vars
+          # leaves them alone instead of wiping them because they're absent
+          # from this config. Only kv_namespaces/services bindings are
+          # managed here, since those ARE fully declared above.
+          npx wrangler deploy --config wrangler.jsonc --keep-vars
+          echo "Deployed Worker URL: ${WORKER_URL}"
+
+      - name: Validate live endpoints (read-only smoke test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const workerUrl = process.env.WORKER_URL;
+          async function request(label, path, options = {}) {
+            const res = await fetch(workerUrl + path, options);
+            const text = await res.text();
+            let body;
+            try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 300) }; }
+            console.log(JSON.stringify({ label, path, status: res.status, body }));
+            return { res, body };
+          }
+          // CORS preflight must succeed cleanly.
+          const preflight = await fetch(workerUrl + '/api/inventory', {
+            method: 'OPTIONS',
+            headers: { Origin: 'https://www.walkoffsc.com', 'Access-Control-Request-Method': 'GET' },
+          });
+          if (preflight.status !== 204) throw new Error(`OPTIONS preflight expected 204, got ${preflight.status}`);
+          console.log(JSON.stringify({ label: 'preflight', status: preflight.status }));
+
+          // Read-only: must come back as clean JSON either way (real data,
+          // or "storefront not published" / a clear INVENTORY_API binding
+          // error) -- never an HTML crash page or a raw 500 with no body.
+          const { res, body } = await request('inventory list', '/api/inventory');
+          if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+            throw new Error('GET /api/inventory did not return a JSON object');
+          }
+          if (!('ok' in body)) throw new Error('GET /api/inventory response is missing "ok"');
+          if (body.ok === false && !body.error) throw new Error('GET /api/inventory returned ok:false with no error message');
+          console.log(JSON.stringify({ ok: true, workerUrl, checkedAt: new Date().toISOString() }));
+          NODE
