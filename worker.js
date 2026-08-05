@@ -55,7 +55,7 @@
 // FIX (2026-08-05): the entire cart drawer, checkout modal, and live
 // inventory grid were hardcoded to a fixed light theme (inline
 // background:#fff / color:#1a1a1a etc everywhere) with no connection at
-// all to the site's --team-primary/--team-secondary/--team-accent/--team-text
+// all to the site's --wo-surface/--wo-surface-alt/--wo-accent/--wo-text
 // theme-picker variables, which live on document.documentElement and are
 // already used successfully throughout the rest of the site. Every inline
 // color below is now a var(--team-*) reference instead of a literal hex
@@ -74,6 +74,35 @@
 // actually reads and filters the live cards; (4) initShopUrlFilter rewritten
 // to filter directly by category instead of hunting for a button that was
 // never created.
+//
+// FIX (2026-08-06): three things.
+// (1) Local pickup was never an option -- every checkout charged a
+// shipping fee and required a full U.S. street address, even though this
+// is a local card shop with walk-in/meetup customers. Checkout is now two
+// steps (fulfillment + contact fields first, actual card payment second,
+// same shape as the vending software's own storefront.html) with a real
+// Ship / Pickup (Fed Way Commons) / Pickup (Kitsap County) picker, so the
+// PaymentIntent amount is only computed once the fulfillment method (and
+// therefore whether shipping applies) is known.
+// (2) Orders placed here only ever existed in this Worker's own WO_ORDERS
+// KV store and its own token-gated /admin page -- completely invisible in
+// the vending software's dashboard Orders tab that's actually used day to
+// day. handleConfirmOrder now also calls the vending software's new
+// POST /public/storefront/record-order (via the same INVENTORY_API Service
+// Binding already used for stock/price checks) to write a matching
+// pos_sales/pos_sale_lines/pos_payments/storefront_orders record, keyed by
+// this Worker's own real Stripe PaymentIntent id -- the vending software's
+// existing Stripe webhook fulfills it automatically from there, with no
+// idea which Worker created the intent. This is additive/best-effort: the
+// existing WO_ORDERS write and /admin page are untouched.
+// (3) --team-primary/--team-secondary/--team-accent/--team-text, referenced
+// throughout the cart/checkout/live-shop CSS since the 2026-08-05 fix
+// above, are not the variables the site's actual team-picker (wo-ui.js)
+// sets -- it writes --wo-primary/--wo-surface/--wo-accent/--wo-text/etc.
+// The 2026-08-05 fix was reading static, never-changing defaults the whole
+// time. Renamed every reference to the real --wo-surface/--wo-surface-alt/
+// --wo-accent/--wo-text variables so this UI actually re-themes when a
+// visitor picks a team.
 // ============================================================================
 
 var ALLOWED_ORIGINS = [
@@ -309,7 +338,9 @@ function formEncode(params, prefix) {
   return parts.filter(Boolean).join("&");
 }
 
-function cartTotals(items, tiers) {
+// fulfillMethod: shipping fees only apply when the customer actually chose
+// shipping -- pickup orders (added 2026-08-06) are always $0 shipping.
+function cartTotals(items, tiers, fulfillMethod) {
   let subtotal = 0;
   let shipping = 0;
   let qtyTotal = 0;
@@ -317,11 +348,24 @@ function cartTotals(items, tiers) {
     const qty = Math.max(1, parseInt(it.qty, 10) || 1);
     const price = Number(it.price) || 0;
     subtotal += price * qty;
-    shipping += shippingForPrice(price, tiers, it.id) * qty;
+    if (fulfillMethod === 'shipping') shipping += shippingForPrice(price, tiers, it.id) * qty;
     qtyTotal += qty;
   });
   const grand = Math.round((subtotal + shipping) * 100) / 100;
   return { subtotal: round2(subtotal), shipping: round2(shipping), grand, qtyTotal };
+}
+
+function validateFulfillment(fulfillment) {
+  const method = String(fulfillment?.method || '');
+  if (!['pickup_fedway', 'pickup_kitsap', 'shipping'].includes(method)) return 'A valid fulfillment method is required';
+  const name = String(fulfillment?.name || '').trim();
+  const phone = String(fulfillment?.phone || '').trim();
+  if (!name || !phone) return 'Name and phone number are required';
+  if (method === 'shipping') {
+    const addr = fulfillment?.shippingAddress || {};
+    if (!addr.line1 || !addr.city || !addr.state || !addr.zip) return 'A complete shipping address is required';
+  }
+  return null;
 }
 function round2(n) { return Math.round(n * 100) / 100; }
 
@@ -356,6 +400,10 @@ async function handleCreateIntent(request, env, origin) {
   const body = await request.json().catch(() => ({}));
   const items = Array.isArray(body.items) ? body.items : [];
   if (!items.length) return json({ error: "Cart is empty" }, 400, corsHeaders(origin));
+
+  const fulfillment = body.fulfillment || {};
+  const fulfillErr = validateFulfillment(fulfillment);
+  if (fulfillErr) return json({ error: fulfillErr }, 400, corsHeaders(origin));
 
   // The exclusive per-id reservation lock below is designed for unique 1-of-1
   // items (each trading card id = one physical card, so only one buyer should
@@ -421,7 +469,7 @@ async function handleCreateIntent(request, env, origin) {
   }
 
   const tiers = getShippingTiers(env);
-  const totals = cartTotals(items, tiers);
+  const totals = cartTotals(items, tiers, fulfillment.method);
   if (totals.grand <= 0) return json({ error: "Invalid cart total" }, 400, corsHeaders(origin));
 
   const stripeKey = env.STRIPE_SECRET_KEY || "";
@@ -451,7 +499,8 @@ async function handleCreateIntent(request, env, origin) {
     metadata: {
       reservationId,
       itemIds: items.map((i) => i.id).filter(Boolean).join(","),
-      source: "walkoffsc-checkout"
+      source: "walkoffsc-checkout",
+      fulfillmentMethod: fulfillment.method
     }
   };
   if (stripeCustomerId) piParams.customer = stripeCustomerId;
@@ -477,7 +526,8 @@ async function handleCreateIntent(request, env, origin) {
     clientSecret: pi.client_secret,
     paymentIntentId: pi.id,
     reservationId,
-    totals
+    totals,
+    amountCents: Math.round(totals.grand * 100)
   }, 200, corsHeaders(origin));
 }
 
@@ -533,6 +583,47 @@ async function handleConfirmOrder(request, env, origin) {
       .filter((i) => i.id && getRunDropKey(i.id))
       .map((it) => incrRunDropSold(env, getRunDropKey(it.id), it.qty))
   );
+
+  // Also record this order into the vending software's own ledger
+  // (pos_sales/pos_sale_lines/pos_payments/storefront_orders via the
+  // INVENTORY_API Service Binding) so it shows up in the dashboard's Orders
+  // tab -- this Worker's own WO_ORDERS write above stays as the source for
+  // /admin, but until now that was the ONLY record; walkoffsc.com orders
+  // were invisible in the tool actually used day to day. Best-effort: the
+  // card is already charged, so a failure here must never surface as a
+  // customer-facing error (same reasoning as the WO_ORDERS write above).
+  try {
+    const fulfillment = body.fulfillment || {
+      method: body.shipping && body.shipping.address1 ? 'shipping' : 'pickup_fedway',
+      name: (body.customer || {}).name || '',
+      phone: '',
+      email: (body.customer || {}).email || '',
+      shippingAddress: body.shipping && body.shipping.address1 ? { line1: body.shipping.address1, city: body.shipping.city, state: body.shipping.state, zip: body.shipping.zip } : null,
+    };
+    const recordItems = (order.items || []).map((it) => ({
+      itemId: getRunDropKey(it.id) ? null : (it.id || null),
+      name: it.name || 'Item',
+      price: Number(it.price || 0),
+      quantity: Math.max(1, parseInt(it.qty, 10) || 1),
+      category: getRunDropKey(it.id) ? 'Print' : 'Card',
+    }));
+    const recordRes = await env.INVENTORY_API.fetch(getInventoryApiBase(env) + '/public/storefront/record-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storeId: getStoreId(env),
+        stripePaymentIntentId: piId,
+        items: recordItems,
+        fulfillment,
+        shippingFeeCents: Math.round(Number((order.totals || {}).shipping || 0) * 100),
+        mode: pi.livemode ? 'live' : 'test',
+      }),
+    });
+    if (!recordRes.ok) console.error('[WO] record-order failed:', recordRes.status, await recordRes.text().catch(() => ''));
+  } catch (e) {
+    console.error('[WO] record-order call failed:', e.message);
+  }
+
   return json({ ok: true, orderId: piId }, 200, corsHeaders(origin));
 }
 
@@ -914,7 +1005,7 @@ function renderCartBadge(){
   if(badge) badge.textContent = getCart().reduce(function(s,i){ return s + Math.max(1, parseInt(i.qty,10)||1); }, 0);
 }
 
-var WO_CLOSE_BTN_CSS = 'background:none;border:none;font-size:26px;line-height:1;width:40px;height:40px;min-width:40px;border-radius:50%;cursor:pointer;color:var(--team-text,#1a1a1a);display:flex;align-items:center;justify-content:center;transition:background .15s ease;';
+var WO_CLOSE_BTN_CSS = 'background:none;border:none;font-size:26px;line-height:1;width:40px;height:40px;min-width:40px;border-radius:50%;cursor:pointer;color:var(--wo-text,#1a1a1a);display:flex;align-items:center;justify-content:center;transition:background .15s ease;';
 
 function ensureDrawer(){
   if(document.getElementById('wo-cart-drawer')) return;
@@ -926,15 +1017,15 @@ function ensureDrawer(){
 
   var d = document.createElement('div');
   d.id = 'wo-cart-drawer';
-  d.style.cssText = 'position:fixed;top:0;right:-420px;width:400px;max-width:92vw;height:100%;background:var(--team-primary,#fff);color:var(--team-text,#1a1a1a);box-shadow:-8px 0 32px rgba(0,0,0,.22);z-index:99999;transition:right .28s ease;display:flex;flex-direction:column;font-family:inherit;';
+  d.style.cssText = 'position:fixed;top:0;right:-420px;width:400px;max-width:92vw;height:100%;background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);box-shadow:-8px 0 32px rgba(0,0,0,.22);z-index:99999;transition:right .28s ease;display:flex;flex-direction:column;font-family:inherit;';
   d.innerHTML = '<div style="padding:20px 16px 20px 24px;border-bottom:1px solid rgba(255,255,255,.12);display:flex;justify-content:space-between;align-items:center;">' +
-      '<strong style="font-size:20px;color:var(--team-text,#1a1a1a);">Your Cart</strong>' +
+      '<strong style="font-size:20px;color:var(--wo-text,#1a1a1a);">Your Cart</strong>' +
       '<button id="wo-cart-close" aria-label="Close cart" style="'+WO_CLOSE_BTN_CSS+'">&times;</button>' +
     '</div>' +
     '<div id="wo-cart-items" style="flex:1;overflow-y:auto;padding:16px 24px;"></div>' +
-    '<div style="padding:20px 24px;border-top:1px solid rgba(255,255,255,.12);background:var(--team-secondary,#fafafa);">' +
-    '<div id="wo-cart-totals" style="font-size:15px;color:var(--team-text,#444);margin-bottom:14px;"></div>' +
-    '<button id="wo-cart-checkout" style="width:100%;padding:15px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Checkout</button>' +
+    '<div style="padding:20px 24px;border-top:1px solid rgba(255,255,255,.12);background:var(--wo-surface-alt,#fafafa);">' +
+    '<div id="wo-cart-totals" style="font-size:15px;color:var(--wo-text,#444);margin-bottom:14px;"></div>' +
+    '<button id="wo-cart-checkout" style="width:100%;padding:15px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Checkout</button>' +
     '</div>';
   document.body.appendChild(d);
   document.getElementById('wo-cart-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
@@ -979,7 +1070,7 @@ function renderDrawerItems(){
   var wrap = document.getElementById('wo-cart-items');
   if(!wrap) return;
   if(!cart.length){
-    wrap.innerHTML = '<div style="text-align:center;padding:48px 12px;color:var(--team-text,#999);opacity:.7;"><div style="font-size:40px;margin-bottom:10px;">\\ud83d\\uded2</div><p style="font-size:15px;">Your cart is empty.</p></div>';
+    wrap.innerHTML = '<div style="text-align:center;padding:48px 12px;color:var(--wo-text,#999);opacity:.7;"><div style="font-size:40px;margin-bottom:10px;">\\ud83d\\uded2</div><p style="font-size:15px;">Your cart is empty.</p></div>';
   } else {
     wrap.innerHTML = cart.map(function(i){
       var qty = Math.max(1, parseInt(i.qty,10)||1);
@@ -987,12 +1078,12 @@ function renderDrawerItems(){
       var lineTotal = (Number(i.price)||0) * qty;
       return '<div style="display:flex;gap:14px;margin-bottom:18px;align-items:center;padding-bottom:18px;border-bottom:1px solid rgba(255,255,255,.1);">' +
         (i.image ? '<img src="'+i.image+'" style="width:84px;height:84px;object-fit:cover;border-radius:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.25);">' : '') +
-        '<div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;color:var(--team-text,#1a1a1a);line-height:1.3;margin-bottom:4px;">'+(i.name||'Item')+'</div>' +
-        '<div style="font-size:15px;color:var(--team-text,#555);opacity:.85;font-weight:600;margin-bottom:8px;">$'+(Number(i.price)||0).toFixed(2)+(qty>1?' \\u00d7 '+qty+' = $'+lineTotal.toFixed(2):'')+'</div>' +
+        '<div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;color:var(--wo-text,#1a1a1a);line-height:1.3;margin-bottom:4px;">'+(i.name||'Item')+'</div>' +
+        '<div style="font-size:15px;color:var(--wo-text,#555);opacity:.85;font-weight:600;margin-bottom:8px;">$'+(Number(i.price)||0).toFixed(2)+(qty>1?' \\u00d7 '+qty+' = $'+lineTotal.toFixed(2):'')+'</div>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
-          '<button data-qty-id="'+i.id+'" data-qty-delta="-1" aria-label="Decrease quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--team-secondary,#fff);color:var(--team-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;">\\u2212</button>' +
-          '<span style="min-width:18px;text-align:center;font-size:13px;font-weight:700;color:var(--team-text,#1a1a1a);">'+qty+'</span>' +
-          '<button data-qty-id="'+i.id+'" data-qty-delta="1" aria-label="Increase quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--team-secondary,#fff);color:var(--team-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;"'+(qty>=available?' disabled':'')+'>+</button>' +
+          '<button data-qty-id="'+i.id+'" data-qty-delta="-1" aria-label="Decrease quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;">\\u2212</button>' +
+          '<span style="min-width:18px;text-align:center;font-size:13px;font-weight:700;color:var(--wo-text,#1a1a1a);">'+qty+'</span>' +
+          '<button data-qty-id="'+i.id+'" data-qty-delta="1" aria-label="Increase quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;"'+(qty>=available?' disabled':'')+'>+</button>' +
         '</div></div>' +
         '<button data-id="'+i.id+'" class="wo-remove-item" aria-label="Remove item" style="background:none;border:1px solid rgba(255,255,255,.2);color:#e5798a;cursor:pointer;font-size:13px;font-weight:700;padding:8px 12px;border-radius:8px;flex-shrink:0;transition:background .15s ease;">Remove</button></div>';
     }).join('');
@@ -1008,15 +1099,42 @@ function renderDrawerItems(){
   var totals = computeTotals(cart);
   var totalsEl = document.getElementById('wo-cart-totals');
   if(totalsEl) totalsEl.innerHTML =
-    '<div style="display:flex;justify-content:space-between;margin-bottom:6px;color:var(--team-text,#444);"><span>Subtotal</span><span>$'+totals.subtotal.toFixed(2)+'</span></div>' +
-    '<div style="display:flex;justify-content:space-between;margin-bottom:10px;color:var(--team-text,#777);opacity:.7;"><span>Shipping</span><span>$'+totals.shipping.toFixed(2)+'</span></div>' +
-    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--team-text,#1a1a1a);padding-top:10px;border-top:1px solid rgba(255,255,255,.15);"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>';
+    '<div style="display:flex;justify-content:space-between;margin-bottom:6px;color:var(--wo-text,#444);"><span>Subtotal</span><span>$'+totals.subtotal.toFixed(2)+'</span></div>' +
+    '<div style="display:flex;justify-content:space-between;margin-bottom:10px;color:var(--wo-text,#777);opacity:.7;"><span>Shipping</span><span>$'+totals.shipping.toFixed(2)+'</span></div>' +
+    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--wo-text,#1a1a1a);padding-top:10px;border-top:1px solid rgba(255,255,255,.15);"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>';
   renderCartBadge();
 }
 
 var _stripe=null,_elements=null,_pe=null,_cs=null,_reservationId=null,_piId=null;
+// FIX (2026-08-06): pickup was never an option here -- every order paid a
+// shipping fee and required a full street address, even for a local card
+// shop with walk-in customers. Checkout is now two steps (fulfillment/
+// contact fields first, payment second) like the vending software's own
+// storefront.html, so the PaymentIntent amount is created AFTER the
+// fulfillment method is known (pickup = $0 shipping) instead of being
+// locked in the instant the modal opens. Also: successful orders are now
+// additionally recorded into the vending software's own storefront_orders
+// table (via the INVENTORY_API Service Binding), so they show up in the
+// dashboard's Orders tab -- previously the only record was this Worker's
+// own separate WO_ORDERS KV store and its own token-gated /admin page.
+var _fulfillMethod = 'pickup_fedway';
+var FULFILL_OPTIONS = [
+  { method:'pickup_fedway', label:'Local Pickup — Fed Way Commons', desc:'We’re there most weekends. We’ll text/call to arrange a pickup time.' },
+  { method:'pickup_kitsap', label:'Local Meetup — Kitsap County', desc:'We’ll coordinate a meeting spot and time with you directly.' },
+  { method:'shipping', label:'Ship to me', desc:'$3 flat rate for 3 raw singles or less, $7 for everything else.' }
+];
 
-var WO_INPUT_CSS = 'width:100%;box-sizing:border-box;padding:13px 14px;margin-bottom:10px;border:1.5px solid rgba(255,255,255,.2);border-radius:9px;font-size:15px;color:var(--team-text,#1a1a1a);background:var(--team-secondary,#fafafa);outline:none;transition:border-color .15s ease,background .15s ease;';
+var WO_INPUT_CSS = 'width:100%;box-sizing:border-box;padding:13px 14px;margin-bottom:10px;border:1.5px solid rgba(255,255,255,.2);border-radius:9px;font-size:15px;color:var(--wo-text,#1a1a1a);background:var(--wo-surface-alt,#fafafa);outline:none;transition:border-color .15s ease,background .15s ease;';
+
+function fulfillOptsHtml(){
+  return FULFILL_OPTIONS.map(function(o){
+    var on = o.method === _fulfillMethod;
+    return '<div class="wo-fulfill-opt" data-method="'+o.method+'" style="border:2px solid '+(on?'var(--wo-accent,#1a1a1a)':'rgba(255,255,255,.15)')+';border-radius:10px;padding:12px 14px;cursor:pointer;'+(on?'background:rgba(255,255,255,.06);':'')+'">' +
+      '<b style="display:block;font-size:14px;color:var(--wo-text,#1a1a1a);">'+o.label+'</b>' +
+      '<span style="font-size:12px;color:var(--wo-text,#888);opacity:.75;">'+o.desc+'</span>' +
+    '</div>';
+  }).join('');
+}
 
 function ensureModal(){
   if(document.getElementById('wo-checkout-backdrop')) return;
@@ -1028,27 +1146,36 @@ function ensureModal(){
   // to the actual inner panel below, where that rule is correct.
   m.id = 'wo-checkout-backdrop';
   m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0);z-index:100000;display:none;align-items:center;justify-content:center;transition:background .2s ease;';
-  m.innerHTML = '<div id="wo-checkout-modal" style="background:var(--team-primary,#fff);color:var(--team-text,#1a1a1a);border-radius:16px;max-width:440px;width:92vw;max-height:88vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.4);">' +
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><strong style="font-size:20px;color:var(--team-text,#1a1a1a);">Checkout</strong><button id="wo-co-close" aria-label="Close checkout" style="'+WO_CLOSE_BTN_CSS+'">&times;</button></div>' +
-    '<div id="wo-co-form">' +
+  m.innerHTML = '<div id="wo-checkout-modal" style="background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:16px;max-width:440px;width:92vw;max-height:88vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.4);">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><strong style="font-size:20px;color:var(--wo-text,#1a1a1a);">Checkout</strong><button id="wo-co-close" aria-label="Close checkout" style="'+WO_CLOSE_BTN_CSS+'">&times;</button></div>' +
+    '<div id="wo-co-step1">' +
+      '<div id="wo-co-fulfill-opts" style="display:grid;gap:8px;margin-bottom:14px;">'+fulfillOptsHtml()+'</div>' +
       '<input id="wo-co-name" placeholder="Full name" autocomplete="name" style="'+WO_INPUT_CSS+'">' +
-      '<input id="wo-co-email" type="email" placeholder="Email" autocomplete="email" style="'+WO_INPUT_CSS+'">' +
-      '<div style="font-size:12px;color:var(--team-text,#999);opacity:.7;margin:2px 0 8px;">Ships within the U.S. only.</div>' +
-      '<input id="wo-co-addr1" placeholder="Address" autocomplete="address-line1" style="'+WO_INPUT_CSS+'">' +
-      '<div style="display:flex;gap:8px;">' +
-        '<input id="wo-co-city" placeholder="City" autocomplete="address-level2" style="'+WO_INPUT_CSS+'flex:2;">' +
-        '<input id="wo-co-state" placeholder="State" autocomplete="address-level1" maxlength="2" style="'+WO_INPUT_CSS+'flex:1;text-transform:uppercase;">' +
-        '<input id="wo-co-zip" placeholder="ZIP" autocomplete="postal-code" inputmode="numeric" style="'+WO_INPUT_CSS+'flex:1;">' +
+      '<input id="wo-co-phone" type="tel" placeholder="Phone number" autocomplete="tel" style="'+WO_INPUT_CSS+'">' +
+      '<input id="wo-co-email" type="email" placeholder="Email (optional)" autocomplete="email" style="'+WO_INPUT_CSS+'">' +
+      '<div id="wo-co-shipping-fields" style="display:'+(_fulfillMethod==='shipping'?'block':'none')+';">' +
+        '<div style="font-size:12px;color:var(--wo-text,#999);opacity:.7;margin:2px 0 8px;">Ships within the U.S. only.</div>' +
+        '<input id="wo-co-addr1" placeholder="Address" autocomplete="address-line1" style="'+WO_INPUT_CSS+'">' +
+        '<div style="display:flex;gap:8px;">' +
+          '<input id="wo-co-city" placeholder="City" autocomplete="address-level2" style="'+WO_INPUT_CSS+'flex:2;">' +
+          '<input id="wo-co-state" placeholder="State" autocomplete="address-level1" maxlength="2" style="'+WO_INPUT_CSS+'flex:1;text-transform:uppercase;">' +
+          '<input id="wo-co-zip" placeholder="ZIP" autocomplete="postal-code" inputmode="numeric" style="'+WO_INPUT_CSS+'flex:1;">' +
+        '</div>' +
       '</div>' +
+      '<div id="wo-co-err1" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+      '<button id="wo-co-continue" style="width:100%;padding:15px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Continue to Payment</button>' +
+    '</div>' +
+    '<div id="wo-co-step2" style="display:none;">' +
+      '<div id="wo-co-total-line" style="font-size:14px;margin-bottom:12px;color:var(--wo-text,#1a1a1a);"></div>' +
       '<div id="wo-co-payment-element" style="margin:16px 0;"></div>' +
-      '<div id="wo-co-err" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
-      '<button id="wo-co-pay" style="width:100%;padding:15px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Place Order</button>' +
-      '<div style="text-align:center;font-size:12px;color:var(--team-text,#999);opacity:.7;margin-top:10px;">Secured by Stripe \\u2014 your card is charged immediately and your order goes straight into the fulfillment queue.</div>' +
+      '<div id="wo-co-err2" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+      '<button id="wo-co-pay" style="width:100%;padding:15px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Place Order</button>' +
+      '<div style="text-align:center;font-size:12px;color:var(--wo-text,#999);opacity:.7;margin-top:10px;">Secured by Stripe — your card is charged immediately and your order goes straight into the fulfillment queue.</div>' +
     '</div>' +
     '<div id="wo-co-success" style="display:none;text-align:center;padding:24px 0;">' +
-      '<div style="font-size:44px;margin-bottom:12px;">\\u2705</div>' +
-      '<h3 style="font-size:20px;margin:0 0 8px;color:var(--team-text,#1a1a1a);">Order confirmed!</h3>' +
-      '<p style="color:var(--team-text,#666);opacity:.8;font-size:14px;line-height:1.5;">Your payment went through and your order is ready to be fulfilled. A confirmation email is on its way.</p>' +
+      '<div style="font-size:44px;margin-bottom:12px;">✅</div>' +
+      '<h3 style="font-size:20px;margin:0 0 8px;color:var(--wo-text,#1a1a1a);">Order confirmed!</h3>' +
+      '<p style="color:var(--wo-text,#666);opacity:.8;font-size:14px;line-height:1.5;">Your payment went through and your order is ready to be fulfilled. A confirmation email is on its way.</p>' +
     '</div>' +
   '</div>';
   document.body.appendChild(m);
@@ -1057,29 +1184,49 @@ function ensureModal(){
   document.getElementById('wo-co-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
   document.getElementById('wo-co-close').onmouseleave = function(){ this.style.background = 'none'; };
   document.getElementById('wo-co-close').onclick = closeCheckoutModal;
+  document.getElementById('wo-co-continue').onclick = submitCheckoutStep1;
   document.getElementById('wo-co-pay').onmouseenter = function(){ this.style.filter = 'brightness(1.1)'; };
   document.getElementById('wo-co-pay').onmouseleave = function(){ this.style.filter = 'none'; };
-  document.getElementById('wo-co-pay').onclick = submitCheckout;
-  Array.prototype.forEach.call(m.querySelectorAll('#wo-co-form input'), function(inp){
+  document.getElementById('wo-co-pay').onclick = confirmCheckoutPayment;
+  Array.prototype.forEach.call(m.querySelectorAll('#wo-co-fulfill-opts [data-method]'), function(el){
+    el.onclick = function(){ setCheckoutFulfillment(el.getAttribute('data-method')); };
+  });
+  Array.prototype.forEach.call(m.querySelectorAll('#wo-co-step1 input'), function(inp){
     // setProperty(...,'important') because a site-wide rule force-sets
     // #wo-checkout-modal input { border:1px solid ... !important }, which
     // would otherwise silently swallow this focus highlight.
-    inp.onfocus = function(){ this.style.setProperty('border-color', 'var(--team-accent,#1a1a1a)', 'important'); };
+    inp.onfocus = function(){ this.style.setProperty('border-color', 'var(--wo-accent,#1a1a1a)', 'important'); };
     inp.onblur = function(){ this.style.setProperty('border-color', 'rgba(255,255,255,.2)', 'important'); };
   });
 }
 
-function showErr(msg){ var e=document.getElementById('wo-co-err'); if(e) e.textContent = msg || ''; }
+function setCheckoutFulfillment(method){
+  _fulfillMethod = method;
+  var host = document.getElementById('wo-co-fulfill-opts');
+  if(host) host.innerHTML = fulfillOptsHtml();
+  Array.prototype.forEach.call(document.querySelectorAll('#wo-co-fulfill-opts [data-method]'), function(el){
+    el.onclick = function(){ setCheckoutFulfillment(el.getAttribute('data-method')); };
+  });
+  var shipFields = document.getElementById('wo-co-shipping-fields');
+  if(shipFields) shipFields.style.display = method === 'shipping' ? 'block' : 'none';
+}
+
+function showErr1(msg){ var e=document.getElementById('wo-co-err1'); if(e) e.textContent = msg || ''; }
+function showErr2(msg){ var e=document.getElementById('wo-co-err2'); if(e) e.textContent = msg || ''; }
 
 function openCheckoutModal(){
   var cart = getCart();
   if(!cart.length) return;
   ensureModal();
+  _fulfillMethod = 'pickup_fedway';
+  setCheckoutFulfillment('pickup_fedway');
+  document.getElementById('wo-co-step1').style.display = 'block';
+  document.getElementById('wo-co-step2').style.display = 'none';
+  document.getElementById('wo-co-success').style.display = 'none';
+  showErr1(''); showErr2('');
   var m = document.getElementById('wo-checkout-backdrop');
   m.style.display = 'flex';
   requestAnimationFrame(function(){ m.style.background = 'rgba(0,0,0,.5)'; });
-  showErr('');
-  initIntent(cart);
 }
 
 function closeCheckoutModal(){
@@ -1089,16 +1236,77 @@ function closeCheckoutModal(){
   setTimeout(function(){ m.style.display = 'none'; }, 200);
 }
 
-function initIntent(cart){
-  var email = document.getElementById('wo-co-email').value || '';
+function validateContactFields(name, phone, addr1, city, state, zip){
+  if(!name || name.trim().length < 2 || !/[a-zA-Z]/.test(name)){
+    return 'Please enter your full name.';
+  }
+  if(!phone || phone.replace(/\D/g,'').length < 7){
+    return 'Please enter a valid phone number.';
+  }
+  if(_fulfillMethod !== 'shipping') return null;
+  if(!addr1 || addr1.trim().length < 4 || !/\d/.test(addr1)){
+    return 'Please enter a valid street address (with a number).';
+  }
+  if(!city || city.trim().length < 2 || !/[a-zA-Z]/.test(city)){
+    return 'Please enter a valid city.';
+  }
+  if(!state || !/^[a-zA-Z]{2}$/.test(state.trim())){
+    return 'Please enter your 2-letter state (e.g. WA).';
+  }
+  var zipDigits = (zip || '').replace(/\D/g, '');
+  if(zipDigits.length !== 5 && zipDigits.length !== 9){
+    return 'Please enter a valid 5-digit ZIP code.';
+  }
+  return null;
+}
+
+// Step 1: validate contact/fulfillment fields, then create the Stripe
+// PaymentIntent server-side (amount now correctly reflects $0 shipping for
+// pickup) before moving on to the actual card entry step.
+function submitCheckoutStep1(){
+  var name = (document.getElementById('wo-co-name').value || '').trim();
+  var phone = (document.getElementById('wo-co-phone').value || '').trim();
+  var email = (document.getElementById('wo-co-email').value || '').trim();
+  var addr1 = (document.getElementById('wo-co-addr1').value || '').trim();
+  var city = (document.getElementById('wo-co-city').value || '').trim();
+  var state = (document.getElementById('wo-co-state').value || '').trim().toUpperCase();
+  var zipRaw = (document.getElementById('wo-co-zip').value || '').trim();
+  var fieldErr = validateContactFields(name, phone, addr1, city, state, zipRaw);
+  if(fieldErr){ showErr1(fieldErr); return; }
+  var zipDigits = zipRaw.replace(/\D/g, '');
+  var zip = zipDigits.length === 9 ? zipDigits.slice(0,5) + '-' + zipDigits.slice(5) : zipDigits;
+  showErr1('');
+  var shippingAddress = _fulfillMethod === 'shipping' ? { line1: addr1, city: city, state: state, zip: zip } : null;
+  var cart = getCart();
+  var btn = document.getElementById('wo-co-continue');
+  btn.disabled = true; btn.textContent = 'Please wait…';
   fetch(API_BASE + '/api/cart/create-intent', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ items: cart, email: email })
+    body: JSON.stringify({
+      items: cart, email: email,
+      fulfillment: { method: _fulfillMethod, name: name, phone: phone, email: email, shippingAddress: shippingAddress }
+    })
   }).then(function(r){ return r.json(); }).then(function(d){
-    if(d.error){ showErr(d.error); return; }
+    btn.disabled = false; btn.textContent = 'Continue to Payment';
+    if(d.error){ showErr1(d.error); return; }
     _cs = d.clientSecret; _piId = d.paymentIntentId; _reservationId = d.reservationId;
-    mountStripe();
-  }).catch(function(){ showErr('Could not start checkout. Try again.'); });
+    _checkoutContact = { name: name, phone: phone, email: email, shippingAddress: shippingAddress };
+    _checkoutAmountCents = d.amountCents;
+    showPaymentStep(d);
+  }).catch(function(){
+    btn.disabled = false; btn.textContent = 'Continue to Payment';
+    showErr1('Could not start checkout. Try again.');
+  });
+}
+
+var _checkoutContact = null, _checkoutAmountCents = 0;
+
+function showPaymentStep(data){
+  document.getElementById('wo-co-step1').style.display = 'none';
+  document.getElementById('wo-co-step2').style.display = 'block';
+  var totalLine = document.getElementById('wo-co-total-line');
+  if(totalLine) totalLine.innerHTML = 'Total: <b>$'+((data.amountCents||0)/100).toFixed(2)+'</b>';
+  mountStripe();
 }
 
 function mountStripe(){
@@ -1108,55 +1316,26 @@ function mountStripe(){
 function doMount(){
   if(!_stripe) _stripe = Stripe(STRIPE_PK);
   var rootStyles = getComputedStyle(document.documentElement);
-  var teamAccent = rootStyles.getPropertyValue('--team-accent').trim() || '#1a1a1a';
-  _elements = _stripe.elements({ clientSecret: _cs, appearance: { theme: 'stripe', variables: { colorPrimary: teamAccent, borderRadius: '8px' } } });
+  var woAccent = rootStyles.getPropertyValue('--wo-accent').trim() || '#1a1a1a';
+  _elements = _stripe.elements({ clientSecret: _cs, appearance: { theme: 'stripe', variables: { colorPrimary: woAccent, borderRadius: '8px' } } });
   _pe = _elements.create('payment', {
     fields: { billingDetails: { name: 'never', email: 'never', address: 'never' } }
   });
   _pe.mount('#wo-co-payment-element');
 }
 
-function validateCheckoutFields(name, email, addr1, city, state, zip){
-  if(!name || name.trim().length < 2 || !/[a-zA-Z]/.test(name)){
-    return 'Please enter your full name.';
-  }
-  if(!email || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(email)){
-    return 'Please enter a valid email address.';
-  }
-  if(!addr1 || addr1.trim().length < 4 || !/\\d/.test(addr1)){
-    return 'Please enter a valid street address (with a number).';
-  }
-  if(!city || city.trim().length < 2 || !/[a-zA-Z]/.test(city)){
-    return 'Please enter a valid city.';
-  }
-  if(!state || !/^[a-zA-Z]{2}$/.test(state.trim())){
-    return 'Please enter your 2-letter state (e.g. WA).';
-  }
-  var zipDigits = (zip || '').replace(/\\D/g, '');
-  if(zipDigits.length !== 5 && zipDigits.length !== 9){
-    return 'Please enter a valid 5-digit ZIP code.';
-  }
-  return null;
-}
-
-function submitCheckout(){
-  if(!_stripe || !_elements){ showErr('Payment form still loading, one sec.'); return; }
-  var name = (document.getElementById('wo-co-name').value || '').trim();
-  var email = (document.getElementById('wo-co-email').value || '').trim();
-  var addr1 = (document.getElementById('wo-co-addr1').value || '').trim();
-  var city = (document.getElementById('wo-co-city').value || '').trim();
-  var state = (document.getElementById('wo-co-state').value || '').trim().toUpperCase();
-  var zipRaw = (document.getElementById('wo-co-zip').value || '').trim();
-  var fieldErr = validateCheckoutFields(name, email, addr1, city, state, zipRaw);
-  if(fieldErr){ showErr(fieldErr); return; }
-  var zipDigits = zipRaw.replace(/\\D/g, '');
-  var zip = zipDigits.length === 9 ? zipDigits.slice(0,5) + '-' + zipDigits.slice(5) : zipDigits;
-  showErr('');
+// Step 2: actually charge the card, then record the completed order.
+function confirmCheckoutPayment(){
+  if(!_stripe || !_elements){ showErr2('Payment form still loading, one sec.'); return; }
+  var c = _checkoutContact || {};
+  showErr2('');
+  var payDetails = { name: c.name, email: c.email };
+  if(c.shippingAddress) payDetails.address = { line1: c.shippingAddress.line1, city: c.shippingAddress.city, state: c.shippingAddress.state, postal_code: c.shippingAddress.zip, country: 'US' };
   _stripe.confirmPayment({
     elements: _elements, redirect: 'if_required',
-    confirmParams: { payment_method_data: { billing_details: { name: name, email: email, address: { line1: addr1, city: city, state: state, postal_code: zip, country: 'US' } } } }
+    confirmParams: { payment_method_data: { billing_details: payDetails } }
   }).then(function(res){
-    if(res.error){ showErr(res.error.message); return; }
+    if(res.error){ showErr2(res.error.message); return; }
     var cart = getCart();
     var totals = computeTotals(cart);
     return fetch(API_BASE + '/api/order/confirm', {
@@ -1164,8 +1343,10 @@ function submitCheckout(){
       body: JSON.stringify({
         paymentIntentId: _piId,
         items: cart, totals: totals,
-        customer: { name: name, email: email },
-        shipping: { address1: addr1, city: city, state: state, zip: zip }
+        customer: { name: c.name, email: c.email },
+        shipping: c.shippingAddress ? { address1: c.shippingAddress.line1, city: c.shippingAddress.city, state: c.shippingAddress.state, zip: c.shippingAddress.zip } : {},
+        fulfillment: { method: _fulfillMethod, name: c.name, phone: c.phone, email: c.email, shippingAddress: c.shippingAddress },
+        amountCents: _checkoutAmountCents
       })
     }).then(function(r){
       return r.json().catch(function(){ return {}; }).then(function(data){
@@ -1174,11 +1355,11 @@ function submitCheckout(){
         // duplicate charge). Always show success; if saving the order details
         // failed, surface it loudly for us instead so it can be fixed by hand.
         setCart([]);
-        document.getElementById('wo-co-form').style.display = 'none';
+        document.getElementById('wo-co-step2').style.display = 'none';
         var successEl = document.getElementById('wo-co-success');
         if(successEl) successEl.style.display = 'block';
         if(!r.ok || data.error){
-          console.error('[Dougvana] order/confirm failed after a successful charge', _piId, data && data.error);
+          console.error('[WO] order/confirm failed after a successful charge', _piId, data && data.error);
           if(successEl){
             var note = document.createElement('p');
             note.style.cssText = 'color:#e5798a;font-size:12px;margin-top:8px;';
@@ -1188,7 +1369,7 @@ function submitCheckout(){
         }
       });
     });
-  }).catch(function(err){ showErr((err && err.message) ? err.message : 'Something went wrong. Please try again.'); });
+  }).catch(function(err){ showErr2((err && err.message) ? err.message : 'Something went wrong. Please try again.'); });
 }
 
 function initTeamTheme(){
@@ -1221,9 +1402,9 @@ function initProductBrowsing(){
   var nav = document.createElement('div');
   nav.id = 'wo-product-nav';
   nav.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:12px;margin:16px 0;font-size:14px;';
-  nav.innerHTML = '<button id="wo-prev-btn" style="background:none;border:1px solid rgba(255,255,255,.25);color:var(--team-text,#1a1a1a);border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>&#8592; Previous</button>' +
-    '<span id="wo-nav-position" style="color:var(--team-text,#888);opacity:.7;font-size:12px;"></span>' +
-    '<button id="wo-next-btn" style="background:none;border:1px solid rgba(255,255,255,.25);color:var(--team-text,#1a1a1a);border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>Next &#8594;</button>';
+  nav.innerHTML = '<button id="wo-prev-btn" style="background:none;border:1px solid rgba(255,255,255,.25);color:var(--wo-text,#1a1a1a);border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>&#8592; Previous</button>' +
+    '<span id="wo-nav-position" style="color:var(--wo-text,#888);opacity:.7;font-size:12px;"></span>' +
+    '<button id="wo-next-btn" style="background:none;border:1px solid rgba(255,255,255,.25);color:var(--wo-text,#1a1a1a);border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>Next &#8594;</button>';
   dataEl.parentElement.insertBefore(nav, dataEl);
 
   fetch(API_BASE + '/api/product-neighbors?slug=' + encodeURIComponent(slug) + '&category=' + encodeURIComponent(category))
@@ -1278,7 +1459,7 @@ function categoryMatchesSlug(itemCategory, slug){
 
 // Builds the search + category filter bar above the live inventory grid.
 // Uses the same wo-store-controls/wo-store-search-field/wo-store-control-field
-// classes already styled in Webflow (themed to --team-primary/secondary/text),
+// classes already styled in Webflow (themed to --wo-surface/secondary/text),
 // so this picks up the site's look with zero extra CSS of its own.
 function buildLiveShopControls(items, onFilterChange){
   var bar = document.createElement('div');
@@ -1343,19 +1524,19 @@ function woComicDetailHtml(c){
   var hasContent = stats.length || c.description || (c.writers||[]).length || (c.artists||[]).length || (c.coverArtists||[]).length;
   if(!hasContent) return '';
   var html = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.12);">';
-  html += '<div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--team-text,#1a1a1a);">Book Details, Story &amp; Creators</div>';
+  html += '<div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--wo-text,#1a1a1a);">Book Details, Story &amp; Creators</div>';
   if(stats.length){
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-bottom:10px;">';
     stats.forEach(function(pair){
-      html += '<div style="background:var(--team-secondary,#f5f7fa);border-radius:6px;padding:6px 8px;"><div style="font-size:8px;color:var(--team-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(pair[0])+'</div><div style="font-size:12px;font-weight:600;color:var(--team-text,#1a1a1a);">'+escapeHtml(String(pair[1]))+'</div></div>';
+      html += '<div style="background:var(--wo-surface-alt,#f5f7fa);border-radius:6px;padding:6px 8px;"><div style="font-size:8px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(pair[0])+'</div><div style="font-size:12px;font-weight:600;color:var(--wo-text,#1a1a1a);">'+escapeHtml(String(pair[1]))+'</div></div>';
     });
     html += '</div>';
   }
-  if(c.description) html += '<div style="font-size:12px;line-height:1.6;margin-bottom:10px;color:var(--team-text,#1a1a1a);">'+escapeHtml(c.description)+'</div>';
-  if((c.writers||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--team-text,#1a1a1a);"><b>Writer:</b> '+escapeHtml(c.writers.join(', '))+'</div>';
-  if((c.artists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--team-text,#1a1a1a);"><b>Artist:</b> '+escapeHtml(c.artists.join(', '))+'</div>';
-  if((c.coverArtists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--team-text,#1a1a1a);"><b>Cover artist:</b> '+escapeHtml(c.coverArtists.join(', '))+'</div>';
-  if(credits) html += '<div style="font-size:11px;color:var(--team-text,#888);opacity:.7;margin-top:6px;">'+escapeHtml(credits)+'</div>';
+  if(c.description) html += '<div style="font-size:12px;line-height:1.6;margin-bottom:10px;color:var(--wo-text,#1a1a1a);">'+escapeHtml(c.description)+'</div>';
+  if((c.writers||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--wo-text,#1a1a1a);"><b>Writer:</b> '+escapeHtml(c.writers.join(', '))+'</div>';
+  if((c.artists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--wo-text,#1a1a1a);"><b>Artist:</b> '+escapeHtml(c.artists.join(', '))+'</div>';
+  if((c.coverArtists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--wo-text,#1a1a1a);"><b>Cover artist:</b> '+escapeHtml(c.coverArtists.join(', '))+'</div>';
+  if(credits) html += '<div style="font-size:11px;color:var(--wo-text,#888);opacity:.7;margin-top:6px;">'+escapeHtml(credits)+'</div>';
   html += '</div>';
   return html;
 }
@@ -1377,17 +1558,17 @@ function openWoLiveItemDetail(item){
   var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
   var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
   var card = document.createElement('div');
-  card.style.cssText = 'width:100%;max-width:520px;background:var(--team-primary,#fff);color:var(--team-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
+  card.style.cssText = 'width:100%;max-width:520px;background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
   card.innerHTML =
-    '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--team-text,#888);opacity:.7;line-height:1;">&times;</button>' +
-    (item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;max-height:340px;object-fit:contain;border-radius:8px;background:var(--team-secondary,#f2f2f2);">' : '') +
-    '<div style="font-size:11px;color:var(--team-text,#888);opacity:.7;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
-    '<div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--team-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
-    (metaLine ? '<div style="font-size:12px;color:var(--team-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
+    '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--wo-text,#888);opacity:.7;line-height:1;">&times;</button>' +
+    (item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;max-height:340px;object-fit:contain;border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);">' : '') +
+    '<div style="font-size:11px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
+    '<div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
+    (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
     (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
-    '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--team-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
+    '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
     (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#e5798a;font-weight:700;">Only '+stockQty+' left</div>' : '') +
-    '<button data-wo-add-to-cart style="margin-top:14px;width:100%;padding:12px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+    '<button data-wo-add-to-cart style="margin-top:14px;width:100%;padding:12px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
     woComicDetailHtml(item.comic);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
@@ -1402,14 +1583,14 @@ function openWoLiveItemDetail(item){
 function renderLiveInventory(){
   var mount = document.getElementById('wo-live-shop');
   if(!mount) return;
-  mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--team-text,#888);opacity:.7;">Loading inventory\\u2026</div>';
+  mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--wo-text,#888);opacity:.7;">Loading inventory\\u2026</div>';
 
   fetch(API_BASE + '/api/inventory')
     .then(function(r){ return r.json(); })
     .then(function(d){
       var items = (d && d.items) || [];
       if(!items.length){
-        mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--team-text,#888);opacity:.7;">Nothing available right now \\u2014 check back soon.</div>';
+        mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--wo-text,#888);opacity:.7;">Nothing available right now \\u2014 check back soon.</div>';
         return;
       }
       mount.innerHTML = '';
@@ -1434,11 +1615,11 @@ function renderLiveInventory(){
         var card = document.createElement('div');
         card.className = 'wo-live-card';
         card.setAttribute('data-category', (item.category || '').toLowerCase());
-        card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--team-secondary,#fff);color:var(--team-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;';
-        var imgHtml = item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--team-primary,#f2f2f2);">' : '<div style="width:100%;aspect-ratio:1/1;background:var(--team-primary,#f2f2f2);"></div>';
+        card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;';
+        var imgHtml = item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">' : '<div style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
         var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
         var stockLine = stockQty > 0
-          ? ('<div style="font-size:11px;color:' + (stockQty <= 3 ? '#e5798a' : 'var(--team-text,#888)') + ';opacity:' + (stockQty <= 3 ? '1' : '.7') + ';font-weight:' + (stockQty <= 3 ? '700' : '400') + ';">' + (stockQty <= 3 ? 'Only ' + stockQty + ' left' : stockQty + ' in stock') + '</div>')
+          ? ('<div style="font-size:11px;color:' + (stockQty <= 3 ? '#e5798a' : 'var(--wo-text,#888)') + ';opacity:' + (stockQty <= 3 ? '1' : '.7') + ';font-weight:' + (stockQty <= 3 ? '700' : '400') + ';">' + (stockQty <= 3 ? 'Only ' + stockQty + ' left' : stockQty + ' in stock') + '</div>')
           : '';
         // The public-storefront payload carries set/year/variant/condition
         // as separate fields (not a pre-joined display string), so build
@@ -1447,12 +1628,12 @@ function renderLiveInventory(){
         var signedBadge = item.isSigned ? '<div style="font-size:10px;font-weight:700;color:#92400e;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '';
         card.innerHTML = imgHtml +
           '<div style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
-          '<div style="font-size:14px;font-weight:600;color:var(--team-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
-          (metaLine ? '<div style="font-size:12px;color:var(--team-text,#888);opacity:.7;">'+escapeHtml(metaLine)+'</div>' : '') +
+          '<div style="font-size:14px;font-weight:600;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
+          (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;">'+escapeHtml(metaLine)+'</div>' : '') +
           signedBadge +
           stockLine +
-          '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--team-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
-          '<button data-wo-add-to-cart style="padding:10px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+          '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
+          '<button data-wo-add-to-cart style="padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
           '<div class="wo-cart-data" style="display:none;">' +
           '<span class="wo-d-slug">'+escapeHtml(item.id)+'</span>' +
           '<span class="wo-d-name">'+escapeHtml(item.name)+'</span>' +
