@@ -51,11 +51,38 @@
 // *.workers.dev restriction that caused the 2026-07-25 workaround --
 // there's no reason left for a second implementation of "what's for sale
 // and at what price" to exist.
+//
+// FIX (2026-08-05): the entire cart drawer, checkout modal, and live
+// inventory grid were hardcoded to a fixed light theme (inline
+// background:#fff / color:#1a1a1a etc everywhere) with no connection at
+// all to the site's --team-primary/--team-secondary/--team-accent/--team-text
+// theme-picker variables, which live on document.documentElement and are
+// already used successfully throughout the rest of the site. Every inline
+// color below is now a var(--team-*) reference instead of a literal hex
+// value, so this UI now actually follows whichever team the visitor has
+// picked, the same as everything else on the page. Also: category filtering
+// for the live inventory grid never worked, because renderLiveInventory()
+// never added a data-category attribute to its cards, never built any
+// on-page filter/search UI, and the pre-existing initShopUrlFilter()/
+// applyFilters() logic was written years earlier for a different, static
+// Webflow-CMS product grid (.product-card) that these live cards don't
+// use. Added: (1) a real search + category filter bar rendered above the
+// live grid, styled with the same classes already themed in Webflow
+// (.wo-store-controls / .wo-store-search-field / .wo-store-control-field)
+// so it matches the rest of the site with zero extra CSS; (2) a
+// data-category attribute on every live card; (3) filtering logic that
+// actually reads and filters the live cards; (4) initShopUrlFilter rewritten
+// to filter directly by category instead of hunting for a button that was
+// never created.
 // ============================================================================
 
 var ALLOWED_ORIGINS = [
   "https://www.walkoffsc.com",
   "https://walkoffsc.com",
+    "https://themanapocket.com",
+
+    "https://www.themanapocket.com",
+
   "https://walk-off-sports-cards-b0d22f.webflow.io",
   "http://localhost:3000",
   "http://localhost:1337"
@@ -887,7 +914,7 @@ function renderCartBadge(){
   if(badge) badge.textContent = getCart().reduce(function(s,i){ return s + Math.max(1, parseInt(i.qty,10)||1); }, 0);
 }
 
-var WO_CLOSE_BTN_CSS = 'background:none;border:none;font-size:26px;line-height:1;width:40px;height:40px;min-width:40px;border-radius:50%;cursor:pointer;color:#1a1a1a;display:flex;align-items:center;justify-content:center;transition:background .15s ease;';
+var WO_CLOSE_BTN_CSS = 'background:none;border:none;font-size:26px;line-height:1;width:40px;height:40px;min-width:40px;border-radius:50%;cursor:pointer;color:var(--team-text,#1a1a1a);display:flex;align-items:center;justify-content:center;transition:background .15s ease;';
 
 function ensureDrawer(){
   if(document.getElementById('wo-cart-drawer')) return;
@@ -899,23 +926,23 @@ function ensureDrawer(){
 
   var d = document.createElement('div');
   d.id = 'wo-cart-drawer';
-  d.style.cssText = 'position:fixed;top:0;right:-420px;width:400px;max-width:92vw;height:100%;background:#fff;box-shadow:-8px 0 32px rgba(0,0,0,.22);z-index:99999;transition:right .28s ease;display:flex;flex-direction:column;font-family:inherit;';
-  d.innerHTML = '<div style="padding:20px 16px 20px 24px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;">' +
-      '<strong style="font-size:20px;">Your Cart</strong>' +
+  d.style.cssText = 'position:fixed;top:0;right:-420px;width:400px;max-width:92vw;height:100%;background:var(--team-primary,#fff);color:var(--team-text,#1a1a1a);box-shadow:-8px 0 32px rgba(0,0,0,.22);z-index:99999;transition:right .28s ease;display:flex;flex-direction:column;font-family:inherit;';
+  d.innerHTML = '<div style="padding:20px 16px 20px 24px;border-bottom:1px solid rgba(255,255,255,.12);display:flex;justify-content:space-between;align-items:center;">' +
+      '<strong style="font-size:20px;color:var(--team-text,#1a1a1a);">Your Cart</strong>' +
       '<button id="wo-cart-close" aria-label="Close cart" style="'+WO_CLOSE_BTN_CSS+'">&times;</button>' +
     '</div>' +
     '<div id="wo-cart-items" style="flex:1;overflow-y:auto;padding:16px 24px;"></div>' +
-    '<div style="padding:20px 24px;border-top:1px solid #eee;background:#fafafa;">' +
-    '<div id="wo-cart-totals" style="font-size:15px;color:#444;margin-bottom:14px;"></div>' +
-    '<button id="wo-cart-checkout" style="width:100%;padding:15px;background:#1a1a1a;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:background .15s ease;">Checkout</button>' +
+    '<div style="padding:20px 24px;border-top:1px solid rgba(255,255,255,.12);background:var(--team-secondary,#fafafa);">' +
+    '<div id="wo-cart-totals" style="font-size:15px;color:var(--team-text,#444);margin-bottom:14px;"></div>' +
+    '<button id="wo-cart-checkout" style="width:100%;padding:15px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Checkout</button>' +
     '</div>';
   document.body.appendChild(d);
-  document.getElementById('wo-cart-close').onmouseenter = function(){ this.style.background = 'rgba(0,0,0,.06)'; };
+  document.getElementById('wo-cart-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
   document.getElementById('wo-cart-close').onmouseleave = function(){ this.style.background = 'none'; };
   document.getElementById('wo-cart-close').onclick = closeCartDrawer;
   document.getElementById('wo-cart-checkout').onclick = openCheckoutModal;
-  document.getElementById('wo-cart-checkout').onmouseenter = function(){ this.style.background = '#4a2f7a'; };
-  document.getElementById('wo-cart-checkout').onmouseleave = function(){ this.style.background = '#1a1a1a'; };
+  document.getElementById('wo-cart-checkout').onmouseenter = function(){ this.style.filter = 'brightness(1.1)'; };
+  document.getElementById('wo-cart-checkout').onmouseleave = function(){ this.style.filter = 'none'; };
 }
 function openCartDrawer(){
   ensureDrawer();
@@ -952,26 +979,26 @@ function renderDrawerItems(){
   var wrap = document.getElementById('wo-cart-items');
   if(!wrap) return;
   if(!cart.length){
-    wrap.innerHTML = '<div style="text-align:center;padding:48px 12px;color:#999;"><div style="font-size:40px;margin-bottom:10px;">\\ud83d\\uded2</div><p style="font-size:15px;">Your cart is empty.</p></div>';
+    wrap.innerHTML = '<div style="text-align:center;padding:48px 12px;color:var(--team-text,#999);opacity:.7;"><div style="font-size:40px;margin-bottom:10px;">\\ud83d\\uded2</div><p style="font-size:15px;">Your cart is empty.</p></div>';
   } else {
     wrap.innerHTML = cart.map(function(i){
       var qty = Math.max(1, parseInt(i.qty,10)||1);
       var available = Math.max(1, parseInt(i.available,10)||1);
       var lineTotal = (Number(i.price)||0) * qty;
-      return '<div style="display:flex;gap:14px;margin-bottom:18px;align-items:center;padding-bottom:18px;border-bottom:1px solid #f0f0f0;">' +
-        (i.image ? '<img src="'+i.image+'" style="width:84px;height:84px;object-fit:cover;border-radius:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.08);">' : '') +
-        '<div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;color:#1a1a1a;line-height:1.3;margin-bottom:4px;">'+(i.name||'Item')+'</div>' +
-        '<div style="font-size:15px;color:#555;font-weight:600;margin-bottom:8px;">$'+(Number(i.price)||0).toFixed(2)+(qty>1?' \\u00d7 '+qty+' = $'+lineTotal.toFixed(2):'')+'</div>' +
+      return '<div style="display:flex;gap:14px;margin-bottom:18px;align-items:center;padding-bottom:18px;border-bottom:1px solid rgba(255,255,255,.1);">' +
+        (i.image ? '<img src="'+i.image+'" style="width:84px;height:84px;object-fit:cover;border-radius:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.25);">' : '') +
+        '<div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;color:var(--team-text,#1a1a1a);line-height:1.3;margin-bottom:4px;">'+(i.name||'Item')+'</div>' +
+        '<div style="font-size:15px;color:var(--team-text,#555);opacity:.85;font-weight:600;margin-bottom:8px;">$'+(Number(i.price)||0).toFixed(2)+(qty>1?' \\u00d7 '+qty+' = $'+lineTotal.toFixed(2):'')+'</div>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
-          '<button data-qty-id="'+i.id+'" data-qty-delta="-1" aria-label="Decrease quantity" style="width:28px;height:28px;border:1px solid #ddd;border-radius:6px;background:#fff;font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;">\\u2212</button>' +
-          '<span style="min-width:18px;text-align:center;font-size:13px;font-weight:700;">'+qty+'</span>' +
-          '<button data-qty-id="'+i.id+'" data-qty-delta="1" aria-label="Increase quantity" style="width:28px;height:28px;border:1px solid #ddd;border-radius:6px;background:#fff;font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;"'+(qty>=available?' disabled':'')+'>+</button>' +
+          '<button data-qty-id="'+i.id+'" data-qty-delta="-1" aria-label="Decrease quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--team-secondary,#fff);color:var(--team-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;">\\u2212</button>' +
+          '<span style="min-width:18px;text-align:center;font-size:13px;font-weight:700;color:var(--team-text,#1a1a1a);">'+qty+'</span>' +
+          '<button data-qty-id="'+i.id+'" data-qty-delta="1" aria-label="Increase quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--team-secondary,#fff);color:var(--team-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;"'+(qty>=available?' disabled':'')+'>+</button>' +
         '</div></div>' +
-        '<button data-id="'+i.id+'" class="wo-remove-item" aria-label="Remove item" style="background:none;border:1px solid #eee;color:#a32030;cursor:pointer;font-size:13px;font-weight:700;padding:8px 12px;border-radius:8px;flex-shrink:0;transition:background .15s ease;">Remove</button></div>';
+        '<button data-id="'+i.id+'" class="wo-remove-item" aria-label="Remove item" style="background:none;border:1px solid rgba(255,255,255,.2);color:#e5798a;cursor:pointer;font-size:13px;font-weight:700;padding:8px 12px;border-radius:8px;flex-shrink:0;transition:background .15s ease;">Remove</button></div>';
     }).join('');
     Array.prototype.forEach.call(wrap.querySelectorAll('.wo-remove-item'), function(btn){
       btn.onclick = function(){ removeFromCart(btn.getAttribute('data-id')); };
-      btn.onmouseenter = function(){ this.style.background = '#fdf0f0'; };
+      btn.onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.08)'; };
       btn.onmouseleave = function(){ this.style.background = 'none'; };
     });
     Array.prototype.forEach.call(wrap.querySelectorAll('[data-qty-delta]'), function(btn){
@@ -981,33 +1008,32 @@ function renderDrawerItems(){
   var totals = computeTotals(cart);
   var totalsEl = document.getElementById('wo-cart-totals');
   if(totalsEl) totalsEl.innerHTML =
-    '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span>Subtotal</span><span>$'+totals.subtotal.toFixed(2)+'</span></div>' +
-    '<div style="display:flex;justify-content:space-between;margin-bottom:10px;color:#777;"><span>Shipping</span><span>$'+totals.shipping.toFixed(2)+'</span></div>' +
-    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:#1a1a1a;padding-top:10px;border-top:1px solid #e5e5e5;"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>';
+    '<div style="display:flex;justify-content:space-between;margin-bottom:6px;color:var(--team-text,#444);"><span>Subtotal</span><span>$'+totals.subtotal.toFixed(2)+'</span></div>' +
+    '<div style="display:flex;justify-content:space-between;margin-bottom:10px;color:var(--team-text,#777);opacity:.7;"><span>Shipping</span><span>$'+totals.shipping.toFixed(2)+'</span></div>' +
+    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--team-text,#1a1a1a);padding-top:10px;border-top:1px solid rgba(255,255,255,.15);"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>';
   renderCartBadge();
 }
 
 var _stripe=null,_elements=null,_pe=null,_cs=null,_reservationId=null,_piId=null;
 
-var WO_INPUT_CSS = 'width:100%;box-sizing:border-box;padding:13px 14px;margin-bottom:10px;border:1.5px solid #ddd;border-radius:9px;font-size:15px;color:#1a1a1a;background:#fafafa;outline:none;transition:border-color .15s ease,background .15s ease;';
+var WO_INPUT_CSS = 'width:100%;box-sizing:border-box;padding:13px 14px;margin-bottom:10px;border:1.5px solid rgba(255,255,255,.2);border-radius:9px;font-size:15px;color:var(--team-text,#1a1a1a);background:var(--team-secondary,#fafafa);outline:none;transition:border-color .15s ease,background .15s ease;';
 
 function ensureModal(){
   if(document.getElementById('wo-checkout-backdrop')) return;
   var m = document.createElement('div');
   // NOTE: the outer full-screen layer is id="wo-checkout-backdrop", NOT
   // "wo-checkout-modal" — a site-wide CSS rule force-styles #wo-checkout-modal
-  // as a white, opaque panel (background:#fff !important), which used to sit
-  // on this exact outer element and silently kill the dark dim-behind-modal
-  // effect. That id now belongs to the actual inner white panel below, where
-  // that rule is correct.
+  // as a themed, opaque panel, which used to sit on this exact outer element
+  // and silently kill the dark dim-behind-modal effect. That id now belongs
+  // to the actual inner panel below, where that rule is correct.
   m.id = 'wo-checkout-backdrop';
   m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0);z-index:100000;display:none;align-items:center;justify-content:center;transition:background .2s ease;';
-  m.innerHTML = '<div id="wo-checkout-modal" style="background:#fff;border-radius:16px;max-width:440px;width:92vw;max-height:88vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.3);">' +
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><strong style="font-size:20px;">Checkout</strong><button id="wo-co-close" aria-label="Close checkout" style="'+WO_CLOSE_BTN_CSS+'">&times;</button></div>' +
+  m.innerHTML = '<div id="wo-checkout-modal" style="background:var(--team-primary,#fff);color:var(--team-text,#1a1a1a);border-radius:16px;max-width:440px;width:92vw;max-height:88vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.4);">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><strong style="font-size:20px;color:var(--team-text,#1a1a1a);">Checkout</strong><button id="wo-co-close" aria-label="Close checkout" style="'+WO_CLOSE_BTN_CSS+'">&times;</button></div>' +
     '<div id="wo-co-form">' +
       '<input id="wo-co-name" placeholder="Full name" autocomplete="name" style="'+WO_INPUT_CSS+'">' +
       '<input id="wo-co-email" type="email" placeholder="Email" autocomplete="email" style="'+WO_INPUT_CSS+'">' +
-      '<div style="font-size:12px;color:#999;margin:2px 0 8px;">Ships within the U.S. only.</div>' +
+      '<div style="font-size:12px;color:var(--team-text,#999);opacity:.7;margin:2px 0 8px;">Ships within the U.S. only.</div>' +
       '<input id="wo-co-addr1" placeholder="Address" autocomplete="address-line1" style="'+WO_INPUT_CSS+'">' +
       '<div style="display:flex;gap:8px;">' +
         '<input id="wo-co-city" placeholder="City" autocomplete="address-level2" style="'+WO_INPUT_CSS+'flex:2;">' +
@@ -1015,31 +1041,31 @@ function ensureModal(){
         '<input id="wo-co-zip" placeholder="ZIP" autocomplete="postal-code" inputmode="numeric" style="'+WO_INPUT_CSS+'flex:1;">' +
       '</div>' +
       '<div id="wo-co-payment-element" style="margin:16px 0;"></div>' +
-      '<div id="wo-co-err" style="color:#c00;font-size:13px;margin-bottom:10px;"></div>' +
-      '<button id="wo-co-pay" style="width:100%;padding:15px;background:#1a1a1a;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:background .15s ease;">Place Order</button>' +
-      '<div style="text-align:center;font-size:12px;color:#999;margin-top:10px;">Secured by Stripe \\u2014 your card is charged immediately and your order goes straight into the fulfillment queue.</div>' +
+      '<div id="wo-co-err" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+      '<button id="wo-co-pay" style="width:100%;padding:15px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Place Order</button>' +
+      '<div style="text-align:center;font-size:12px;color:var(--team-text,#999);opacity:.7;margin-top:10px;">Secured by Stripe \\u2014 your card is charged immediately and your order goes straight into the fulfillment queue.</div>' +
     '</div>' +
     '<div id="wo-co-success" style="display:none;text-align:center;padding:24px 0;">' +
       '<div style="font-size:44px;margin-bottom:12px;">\\u2705</div>' +
-      '<h3 style="font-size:20px;margin:0 0 8px;">Order confirmed!</h3>' +
-      '<p style="color:#666;font-size:14px;line-height:1.5;">Your payment went through and your order is ready to be fulfilled. A confirmation email is on its way.</p>' +
+      '<h3 style="font-size:20px;margin:0 0 8px;color:var(--team-text,#1a1a1a);">Order confirmed!</h3>' +
+      '<p style="color:var(--team-text,#666);opacity:.8;font-size:14px;line-height:1.5;">Your payment went through and your order is ready to be fulfilled. A confirmation email is on its way.</p>' +
     '</div>' +
   '</div>';
   document.body.appendChild(m);
   m.onclick = function(e){ if(e.target === m) closeCheckoutModal(); };
   document.getElementById('wo-checkout-modal').onclick = function(e){ e.stopPropagation(); };
-  document.getElementById('wo-co-close').onmouseenter = function(){ this.style.background = 'rgba(0,0,0,.06)'; };
+  document.getElementById('wo-co-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
   document.getElementById('wo-co-close').onmouseleave = function(){ this.style.background = 'none'; };
   document.getElementById('wo-co-close').onclick = closeCheckoutModal;
-  document.getElementById('wo-co-pay').onmouseenter = function(){ this.style.background = '#4a2f7a'; };
-  document.getElementById('wo-co-pay').onmouseleave = function(){ this.style.background = '#1a1a1a'; };
+  document.getElementById('wo-co-pay').onmouseenter = function(){ this.style.filter = 'brightness(1.1)'; };
+  document.getElementById('wo-co-pay').onmouseleave = function(){ this.style.filter = 'none'; };
   document.getElementById('wo-co-pay').onclick = submitCheckout;
   Array.prototype.forEach.call(m.querySelectorAll('#wo-co-form input'), function(inp){
     // setProperty(...,'important') because a site-wide rule force-sets
-    // #wo-checkout-modal input { border:1px solid #ccc !important }, which
+    // #wo-checkout-modal input { border:1px solid ... !important }, which
     // would otherwise silently swallow this focus highlight.
-    inp.onfocus = function(){ this.style.setProperty('border-color', '#1a1a1a', 'important'); this.style.setProperty('background', '#fff', 'important'); };
-    inp.onblur = function(){ this.style.setProperty('border-color', '#ddd', 'important'); this.style.setProperty('background', '#fafafa', 'important'); };
+    inp.onfocus = function(){ this.style.setProperty('border-color', 'var(--team-accent,#1a1a1a)', 'important'); };
+    inp.onblur = function(){ this.style.setProperty('border-color', 'rgba(255,255,255,.2)', 'important'); };
   });
 }
 
@@ -1081,7 +1107,9 @@ function mountStripe(){
 }
 function doMount(){
   if(!_stripe) _stripe = Stripe(STRIPE_PK);
-  _elements = _stripe.elements({ clientSecret: _cs, appearance: { theme: 'stripe', variables: { colorPrimary: '#1a1a1a', borderRadius: '8px' } } });
+  var rootStyles = getComputedStyle(document.documentElement);
+  var teamAccent = rootStyles.getPropertyValue('--team-accent').trim() || '#1a1a1a';
+  _elements = _stripe.elements({ clientSecret: _cs, appearance: { theme: 'stripe', variables: { colorPrimary: teamAccent, borderRadius: '8px' } } });
   _pe = _elements.create('payment', {
     fields: { billingDetails: { name: 'never', email: 'never', address: 'never' } }
   });
@@ -1153,7 +1181,7 @@ function submitCheckout(){
           console.error('[Dougvana] order/confirm failed after a successful charge', _piId, data && data.error);
           if(successEl){
             var note = document.createElement('p');
-            note.style.cssText = 'color:#c00;font-size:12px;margin-top:8px;';
+            note.style.cssText = 'color:#e5798a;font-size:12px;margin-top:8px;';
             note.textContent = 'Your payment went through, but we hit a snag saving your order. Please email us your payment reference: ' + _piId;
             successEl.appendChild(note);
           }
@@ -1193,9 +1221,9 @@ function initProductBrowsing(){
   var nav = document.createElement('div');
   nav.id = 'wo-product-nav';
   nav.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:12px;margin:16px 0;font-size:14px;';
-  nav.innerHTML = '<button id="wo-prev-btn" style="background:none;border:1px solid #ccc;border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>&#8592; Previous</button>' +
-    '<span id="wo-nav-position" style="color:#888;font-size:12px;"></span>' +
-    '<button id="wo-next-btn" style="background:none;border:1px solid #ccc;border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>Next &#8594;</button>';
+  nav.innerHTML = '<button id="wo-prev-btn" style="background:none;border:1px solid rgba(255,255,255,.25);color:var(--team-text,#1a1a1a);border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>&#8592; Previous</button>' +
+    '<span id="wo-nav-position" style="color:var(--team-text,#888);opacity:.7;font-size:12px;"></span>' +
+    '<button id="wo-next-btn" style="background:none;border:1px solid rgba(255,255,255,.25);color:var(--team-text,#1a1a1a);border-radius:8px;padding:8px 14px;cursor:pointer;" disabled>Next &#8594;</button>';
   dataEl.parentElement.insertBefore(nav, dataEl);
 
   fetch(API_BASE + '/api/product-neighbors?slug=' + encodeURIComponent(slug) + '&category=' + encodeURIComponent(category))
@@ -1219,13 +1247,79 @@ function initProductBrowsing(){
     .catch(function(){});
 }
 
-function initShopUrlFilter(){
+// Category taxonomy: maps the short slugs used in nav links (?cat=sports-cards
+// etc) to the substrings we'll match against each item's real category field
+// coming out of Supabase. Kept intentionally loose (substring, case-insensitive)
+// because the exact category strings sellers type into inventory aren't
+// standardized -- "Pokemon", "Pokémon TCG", "MTG", "Magic: The Gathering" etc
+// should all count as a match for the "tcg" slug. Edit the right-hand arrays
+// here if a slug isn't catching everything it should.
+var CATEGORY_SLUG_MAP = {
+  'sports-cards': ['sport', 'baseball', 'basketball', 'football', 'hockey'],
+  'tcg': ['pokemon', 'pok\\u00e9mon', 'mtg', 'magic'],
+  'comics': ['comic'],
+  'supplies': ['supply', 'supplies', 'toploader', 'sleeve', 'binder']
+};
+var CATEGORY_SLUG_LABELS = {
+  'all': 'All categories',
+  'sports-cards': 'Sports Cards',
+  'tcg': 'Pok\\u00e9mon & MTG',
+  'comics': 'Comics',
+  'supplies': 'Supplies'
+};
+
+function categoryMatchesSlug(itemCategory, slug){
+  if(slug === 'all' || !slug) return true;
+  var cat = (itemCategory || '').toLowerCase();
+  var needles = CATEGORY_SLUG_MAP[slug];
+  if(!needles) return cat.indexOf(slug.replace(/-/g,' ')) !== -1;
+  return needles.some(function(n){ return cat.indexOf(n) !== -1; });
+}
+
+// Builds the search + category filter bar above the live inventory grid.
+// Uses the same wo-store-controls/wo-store-search-field/wo-store-control-field
+// classes already styled in Webflow (themed to --team-primary/secondary/text),
+// so this picks up the site's look with zero extra CSS of its own.
+function buildLiveShopControls(items, onFilterChange){
+  var bar = document.createElement('div');
+  bar.className = 'wo-store-controls';
+  bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:20px;padding:14px;border-radius:12px;';
+
+  var search = document.createElement('input');
+  search.type = 'text';
+  search.placeholder = 'Search inventory...';
+  search.className = 'wo-store-search-field';
+  search.style.cssText = 'flex:2;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);';
+
+  var select = document.createElement('select');
+  select.className = 'wo-store-control-field';
+  select.style.cssText = 'flex:1;min-width:160px;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);';
+  var seen = {};
+  ['all'].concat(Object.keys(CATEGORY_SLUG_LABELS).filter(function(k){ return k !== 'all'; })).forEach(function(slug){
+    if(seen[slug]) return;
+    seen[slug] = true;
+    var opt = document.createElement('option');
+    opt.value = slug;
+    opt.textContent = CATEGORY_SLUG_LABELS[slug] || slug;
+    select.appendChild(opt);
+  });
+
+  bar.appendChild(search);
+  bar.appendChild(select);
+
+  function fire(){ onFilterChange(select.value, search.value.trim().toLowerCase()); }
+  search.addEventListener('input', fire);
+  select.addEventListener('change', fire);
+
+  return { el: bar, select: select, search: search, fire: fire };
+}
+
+function initShopUrlFilter(controls){
   var params = new URLSearchParams(window.location.search);
   var cat = params.get('cat');
-  if(!cat) return;
-  var target = cat.replace(/-/g,' ');
-  var btn = document.querySelector('[data-filter="'+target+'"]');
-  if(btn) btn.click();
+  if(!cat || !controls) return;
+  controls.select.value = cat;
+  controls.fire();
 }
 
 // ----------------------------------------------------------------------------
@@ -1248,20 +1342,20 @@ function woComicDetailHtml(c){
   var credits = (c.credits||[]).map(function(cr){ return [cr.creator, (cr.roles||[]).join(', ')].filter(Boolean).join(' \\u2014 '); }).join('; ');
   var hasContent = stats.length || c.description || (c.writers||[]).length || (c.artists||[]).length || (c.coverArtists||[]).length;
   if(!hasContent) return '';
-  var html = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">';
-  html += '<div style="font-weight:700;font-size:13px;margin-bottom:8px;">Book Details, Story &amp; Creators</div>';
+  var html = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.12);">';
+  html += '<div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--team-text,#1a1a1a);">Book Details, Story &amp; Creators</div>';
   if(stats.length){
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-bottom:10px;">';
     stats.forEach(function(pair){
-      html += '<div style="background:#f5f7fa;border-radius:6px;padding:6px 8px;"><div style="font-size:8px;color:#888;text-transform:uppercase;">'+escapeHtml(pair[0])+'</div><div style="font-size:12px;font-weight:600;">'+escapeHtml(String(pair[1]))+'</div></div>';
+      html += '<div style="background:var(--team-secondary,#f5f7fa);border-radius:6px;padding:6px 8px;"><div style="font-size:8px;color:var(--team-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(pair[0])+'</div><div style="font-size:12px;font-weight:600;color:var(--team-text,#1a1a1a);">'+escapeHtml(String(pair[1]))+'</div></div>';
     });
     html += '</div>';
   }
-  if(c.description) html += '<div style="font-size:12px;line-height:1.6;margin-bottom:10px;">'+escapeHtml(c.description)+'</div>';
-  if((c.writers||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;"><b>Writer:</b> '+escapeHtml(c.writers.join(', '))+'</div>';
-  if((c.artists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;"><b>Artist:</b> '+escapeHtml(c.artists.join(', '))+'</div>';
-  if((c.coverArtists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;"><b>Cover artist:</b> '+escapeHtml(c.coverArtists.join(', '))+'</div>';
-  if(credits) html += '<div style="font-size:11px;color:#888;margin-top:6px;">'+escapeHtml(credits)+'</div>';
+  if(c.description) html += '<div style="font-size:12px;line-height:1.6;margin-bottom:10px;color:var(--team-text,#1a1a1a);">'+escapeHtml(c.description)+'</div>';
+  if((c.writers||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--team-text,#1a1a1a);"><b>Writer:</b> '+escapeHtml(c.writers.join(', '))+'</div>';
+  if((c.artists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--team-text,#1a1a1a);"><b>Artist:</b> '+escapeHtml(c.artists.join(', '))+'</div>';
+  if((c.coverArtists||[]).length) html += '<div style="font-size:12px;margin-bottom:2px;color:var(--team-text,#1a1a1a);"><b>Cover artist:</b> '+escapeHtml(c.coverArtists.join(', '))+'</div>';
+  if(credits) html += '<div style="font-size:11px;color:var(--team-text,#888);opacity:.7;margin-top:6px;">'+escapeHtml(credits)+'</div>';
   html += '</div>';
   return html;
 }
@@ -1283,17 +1377,17 @@ function openWoLiveItemDetail(item){
   var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
   var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
   var card = document.createElement('div');
-  card.style.cssText = 'width:100%;max-width:520px;background:#fff;border-radius:14px;padding:20px;position:relative;';
+  card.style.cssText = 'width:100%;max-width:520px;background:var(--team-primary,#fff);color:var(--team-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
   card.innerHTML =
-    '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1;">&times;</button>' +
-    (item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;max-height:340px;object-fit:contain;border-radius:8px;background:#f2f2f2;">' : '') +
-    '<div style="font-size:11px;color:#888;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
-    '<div style="font-size:20px;font-weight:800;margin-top:4px;">'+escapeHtml(item.name)+'</div>' +
-    (metaLine ? '<div style="font-size:12px;color:#888;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
+    '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--team-text,#888);opacity:.7;line-height:1;">&times;</button>' +
+    (item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;max-height:340px;object-fit:contain;border-radius:8px;background:var(--team-secondary,#f2f2f2);">' : '') +
+    '<div style="font-size:11px;color:var(--team-text,#888);opacity:.7;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
+    '<div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--team-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
+    (metaLine ? '<div style="font-size:12px;color:var(--team-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
     (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
-    '<div style="font-size:22px;font-weight:800;margin-top:10px;">$'+Number(item.price||0).toFixed(2)+'</div>' +
-    (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#a32030;font-weight:700;">Only '+stockQty+' left</div>' : '') +
-    '<button data-wo-add-to-cart style="margin-top:14px;width:100%;padding:12px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+    '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--team-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
+    (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#e5798a;font-weight:700;">Only '+stockQty+' left</div>' : '') +
+    '<button data-wo-add-to-cart style="margin-top:14px;width:100%;padding:12px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
     woComicDetailHtml(item.comic);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
@@ -1308,27 +1402,43 @@ function openWoLiveItemDetail(item){
 function renderLiveInventory(){
   var mount = document.getElementById('wo-live-shop');
   if(!mount) return;
-  mount.innerHTML = '<div style="padding:24px;text-align:center;color:#888;">Loading inventory\\u2026</div>';
+  mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--team-text,#888);opacity:.7;">Loading inventory\\u2026</div>';
 
   fetch(API_BASE + '/api/inventory')
     .then(function(r){ return r.json(); })
     .then(function(d){
       var items = (d && d.items) || [];
       if(!items.length){
-        mount.innerHTML = '<div style="padding:24px;text-align:center;color:#888;">Nothing available right now \\u2014 check back soon.</div>';
+        mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--team-text,#888);opacity:.7;">Nothing available right now \\u2014 check back soon.</div>';
         return;
       }
       mount.innerHTML = '';
+
+      var cardEls = [];
       var grid = document.createElement('div');
       grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;';
+
+      function applyLiveFilters(catSlug, query){
+        cardEls.forEach(function(entry){
+          var matchesCat = categoryMatchesSlug(entry.item.category, catSlug);
+          var matchesQuery = !query || (entry.item.name||'').toLowerCase().indexOf(query) !== -1;
+          entry.el.style.display = (matchesCat && matchesQuery) ? '' : 'none';
+        });
+      }
+
+      var controls = buildLiveShopControls(items, applyLiveFilters);
+      mount.appendChild(controls.el);
+      mount.appendChild(grid);
+
       items.forEach(function(item){
         var card = document.createElement('div');
         card.className = 'wo-live-card';
-        card.style.cssText = 'border:1px solid #eee;border-radius:12px;overflow:hidden;background:#fff;display:flex;flex-direction:column;cursor:pointer;';
-        var imgHtml = item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;aspect-ratio:1/1;object-fit:cover;">' : '<div style="width:100%;aspect-ratio:1/1;background:#f2f2f2;"></div>';
+        card.setAttribute('data-category', (item.category || '').toLowerCase());
+        card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--team-secondary,#fff);color:var(--team-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;';
+        var imgHtml = item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--team-primary,#f2f2f2);">' : '<div style="width:100%;aspect-ratio:1/1;background:var(--team-primary,#f2f2f2);"></div>';
         var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
         var stockLine = stockQty > 0
-          ? ('<div style="font-size:11px;color:' + (stockQty <= 3 ? '#a32030' : '#888') + ';font-weight:' + (stockQty <= 3 ? '700' : '400') + ';">' + (stockQty <= 3 ? 'Only ' + stockQty + ' left' : stockQty + ' in stock') + '</div>')
+          ? ('<div style="font-size:11px;color:' + (stockQty <= 3 ? '#e5798a' : 'var(--team-text,#888)') + ';opacity:' + (stockQty <= 3 ? '1' : '.7') + ';font-weight:' + (stockQty <= 3 ? '700' : '400') + ';">' + (stockQty <= 3 ? 'Only ' + stockQty + ' left' : stockQty + ' in stock') + '</div>')
           : '';
         // The public-storefront payload carries set/year/variant/condition
         // as separate fields (not a pre-joined display string), so build
@@ -1337,12 +1447,12 @@ function renderLiveInventory(){
         var signedBadge = item.isSigned ? '<div style="font-size:10px;font-weight:700;color:#92400e;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '';
         card.innerHTML = imgHtml +
           '<div style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
-          '<div style="font-size:14px;font-weight:600;">'+escapeHtml(item.name)+'</div>' +
-          (metaLine ? '<div style="font-size:12px;color:#888;">'+escapeHtml(metaLine)+'</div>' : '') +
+          '<div style="font-size:14px;font-weight:600;color:var(--team-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
+          (metaLine ? '<div style="font-size:12px;color:var(--team-text,#888);opacity:.7;">'+escapeHtml(metaLine)+'</div>' : '') +
           signedBadge +
           stockLine +
-          '<div style="font-size:15px;font-weight:700;margin-top:auto;">$'+Number(item.price||0).toFixed(2)+'</div>' +
-          '<button data-wo-add-to-cart style="padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+          '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--team-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
+          '<button data-wo-add-to-cart style="padding:10px;background:var(--team-accent,#1a1a1a);color:var(--team-primary,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
           '<div class="wo-cart-data" style="display:none;">' +
           '<span class="wo-d-slug">'+escapeHtml(item.id)+'</span>' +
           '<span class="wo-d-name">'+escapeHtml(item.name)+'</span>' +
@@ -1356,8 +1466,8 @@ function renderLiveInventory(){
           openWoLiveItemDetail(item);
         });
         grid.appendChild(card);
+        cardEls.push({ el: card, item: item });
       });
-      mount.appendChild(grid);
 
       // Wire up the freshly-created Add to Cart buttons
       Array.prototype.forEach.call(mount.querySelectorAll('[data-wo-add-to-cart]'), function(btn){
@@ -1368,9 +1478,13 @@ function renderLiveInventory(){
           addToCart(product);
         });
       });
+
+      // Apply ?cat= from the URL (e.g. the Shop nav dropdown links) once
+      // the cards actually exist to filter.
+      initShopUrlFilter(controls);
     })
     .catch(function(){
-      mount.innerHTML = '<div style="padding:24px;text-align:center;color:#c00;">Could not load inventory right now.</div>';
+      mount.innerHTML = '<div style="padding:24px;text-align:center;color:#e5798a;">Could not load inventory right now.</div>';
     });
 }
 
@@ -1510,7 +1624,6 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
   applyFilters();
-  initShopUrlFilter();
 
   Array.prototype.forEach.call(document.querySelectorAll('[data-wo-add-to-cart]'), function(btn){
     btn.addEventListener('click', function(e){
