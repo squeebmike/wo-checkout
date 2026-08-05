@@ -5,11 +5,11 @@
   "kv_namespaces": [
     {
       "binding": "WO_RESERVATIONS",
-      "id": "REPLACE_WITH_WO_RESERVATIONS_NAMESPACE_ID"
+      "id": "654e778575c841338f1bdd2733b5d86d"
     },
     {
       "binding": "WO_ORDERS",
-      "id": "REPLACE_WITH_WO_ORDERS_NAMESPACE_ID"
+      "id": "612d44f12ad44ac6beca0fab41cf33a3"
     }
   ],
   "services": [
