@@ -220,7 +220,10 @@ async function handleRunDropStock(request, env, origin) {
 // ----------------------------------------------------------------------------
 var DEFAULT_STORE_ID = "0f9dd4bc-42a7-487e-a972-2905d24513e9";
 var DEFAULT_INVENTORY_API_BASE = "https://still-resonance-4f87.swarnerauto.workers.dev";
-var INVENTORY_CACHE_TTL_SECONDS = 45; // short cache so stock feels live but we're not hammering the API
+var INVENTORY_CACHE_TTL_SECONDS = 300; // was 45s -- too short to protect a cold cache from Lighthouse/first-visit
+                                        // hits, which pay the full cost of the live pass-through call to the
+                                        // ArSca storefront API on every miss; that's the dominant LCP cost on the
+                                        // homepage. Inventory doesn't need to be fresher than a few minutes.
 
 function getStoreId(env) { return env.WO_STORE_ID || DEFAULT_STORE_ID; }
 function getInventoryApiBase(env) { return (env.WO_INVENTORY_API_BASE || DEFAULT_INVENTORY_API_BASE).replace(/\/$/, ""); }
