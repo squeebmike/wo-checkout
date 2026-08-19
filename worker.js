@@ -1160,6 +1160,7 @@ function ensureModal(){
       '<input id="wo-co-name" placeholder="Full name" autocomplete="name" style="'+WO_INPUT_CSS+'">' +
       '<input id="wo-co-phone" type="tel" placeholder="Phone number" autocomplete="tel" style="'+WO_INPUT_CSS+'">' +
       '<input id="wo-co-email" type="email" placeholder="Email (optional)" autocomplete="email" style="'+WO_INPUT_CSS+'">' +
+      '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--wo-text,#1a1a1a);margin:-4px 0 12px;"><input id="wo-co-sms-consent" type="checkbox" style="margin-top:3px;"> I agree to receive text messages about this order from The Mana Pocket. Message frequency depends on order activity. Msg &amp; data rates may apply. Reply HELP for help, STOP to opt out. See our <a href="https://themanapocket.com/privacy-policy" target="_blank" style="color:inherit;">Privacy Policy</a> and <a href="https://themanapocket.com/terms-and-conditions" target="_blank" style="color:inherit;">Terms</a>.</label>' +
       '<div id="wo-co-shipping-fields" style="display:'+(_fulfillMethod==='shipping'?'block':'none')+';">' +
         '<div style="font-size:12px;color:var(--wo-text,#999);opacity:.7;margin:2px 0 8px;">Ships within the U.S. only.</div>' +
         '<input id="wo-co-addr1" placeholder="Address" autocomplete="address-line1" style="'+WO_INPUT_CSS+'">' +
@@ -1844,6 +1845,7 @@ function acctPhoneLinkHtml(){
   return '<p style="font-size:13px;color:var(--wo-text,#888);opacity:.8;margin-top:-6px;">Verify your phone number to see your orders, trade credit, loyalty points and more.</p>' +
     '<div id="wo-acct-err" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
     '<input id="wo-acct-phone" type="tel" placeholder="Phone number" autocomplete="tel" style="'+WO_INPUT_CSS+'">' +
+    '<p style="font-size:11px;color:var(--wo-text,#888);opacity:.75;margin:-6px 0 12px;">By continuing, you agree to receive a one-time text message with your verification code from The Mana Pocket. Msg &amp; data rates may apply. See our <a href="https://themanapocket.com/privacy-policy" target="_blank" style="color:inherit;">Privacy Policy</a> and <a href="https://themanapocket.com/terms-and-conditions" target="_blank" style="color:inherit;">Terms</a>.</p>' +
     '<button id="wo-acct-send-code" style="'+WO_PRIMARY_BTN_CSS+'">Send Code</button>' +
     '<div id="wo-acct-code-section" style="display:none;margin-top:14px;">' +
       '<input id="wo-acct-code" inputmode="numeric" maxlength="6" placeholder="Verification code" style="'+WO_INPUT_CSS+'">' +
