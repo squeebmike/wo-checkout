@@ -953,13 +953,20 @@ async function handleDebugSupabase(request, env, origin) {
 // ----------------------------------------------------------------------------
 // Frontend: cart + checkout modal script served at /wo-cart.js
 // ----------------------------------------------------------------------------
-function buildCartScript(stripePk, workerOrigin, tiers) {
+function buildCartScript(stripePk, workerOrigin, tiers, accountApiBase, storeId) {
   return `
 (function(){
 var STRIPE_PK = ${JSON.stringify(stripePk)};
 var API_BASE = ${JSON.stringify(workerOrigin)};
 var SHIP_TIERS = ${JSON.stringify(tiers)};
 var CART_KEY = 'wo_cart_v1';
+// Account routes live on the vending software's own Worker (the same one
+// that supplies live inventory above via the Service Binding) -- called
+// directly from the browser here instead, since /public/account/* is
+// already public + bearer-token gated and CORS-open, unlike the
+// inventory/checkout calls which go through INVENTORY_API server-side.
+var ACCOUNT_API_BASE = ${JSON.stringify(accountApiBase)};
+var WO_STORE_ID = ${JSON.stringify(storeId)};
 
 function getCart(){ try { return JSON.parse(localStorage.getItem(CART_KEY) || '[]'); } catch(e){ return []; } }
 function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c)); renderCartBadge(); }
@@ -1703,6 +1710,257 @@ window.WO.joinFanClub = joinFanClub;
 window.WO.makePledge = makePledge;
 window.WO.getCart = getCart;
 window.WO.removeFromCart = removeFromCart;
+
+// ----------------------------------------------------------------------------
+// Account: sign in/up, phone-link verification, and orders/loyalty/trade
+// credit/consignments/wishlist -- same centered-modal pattern as the
+// checkout modal above (ensureModal/openCheckoutModal), reusing its
+// WO_INPUT_CSS / WO_CLOSE_BTN_CSS so it matches without new site-wide CSS.
+// ----------------------------------------------------------------------------
+var SUPABASE_URL = 'https://vroknjrxubsqyexngwus.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_wbpX2nL8l-4NbXtZNG_bjA_nabSYaJ5';
+var WO_PRIMARY_BTN_CSS = 'width:100%;padding:14px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:9px;font-size:15px;font-weight:700;cursor:pointer;transition:filter .15s ease;';
+var WO_GHOST_BTN_CSS = 'width:100%;padding:12px;background:none;border:1.5px solid rgba(255,255,255,.2);color:var(--wo-text,#1a1a1a);border-radius:9px;font-size:14px;font-weight:700;cursor:pointer;margin-top:14px;';
+
+var _sb = null, _acctSession = null, _acctAuthMode = 'signin', _acctPendingPhone = '';
+var _acctState = { tab: 'summary', loaded: false, linked: false, customer: null, giftCards: [] };
+
+function loadSupabaseJs(cb){
+  if(window.supabase){ cb(); return; }
+  var sc = document.createElement('script');
+  sc.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+  sc.onload = cb;
+  document.head.appendChild(sc);
+}
+function initAccountAuth(){
+  loadSupabaseJs(function(){
+    _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
+    _sb.auth.onAuthStateChange(function(_evt, session){ _acctSession = session; });
+    _sb.auth.getSession().then(function(res){ _acctSession = res.data.session; });
+  });
+}
+
+function ensureAccountModal(){
+  if(document.getElementById('wo-account-backdrop')) return;
+  var m = document.createElement('div');
+  m.id = 'wo-account-backdrop';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0);z-index:100000;display:none;align-items:center;justify-content:center;transition:background .2s ease;';
+  m.innerHTML = '<div id="wo-account-panel" style="background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:16px;max-width:460px;width:92vw;max-height:88vh;overflow-y:auto;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.4);">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;"><strong style="font-size:20px;color:var(--wo-text,#1a1a1a);">My Account</strong><button id="wo-acct-close" aria-label="Close account" style="'+WO_CLOSE_BTN_CSS+'">&times;</button></div>' +
+    '<div id="wo-acct-body"></div>' +
+  '</div>';
+  document.body.appendChild(m);
+  m.onclick = function(e){ if(e.target === m) closeAccountModal(); };
+  document.getElementById('wo-account-panel').onclick = function(e){ e.stopPropagation(); };
+  document.getElementById('wo-acct-close').onclick = closeAccountModal;
+  document.getElementById('wo-acct-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
+  document.getElementById('wo-acct-close').onmouseleave = function(){ this.style.background = 'none'; };
+}
+function openAccountModal(){
+  if(!_sb){ initAccountAuth(); setTimeout(openAccountModal, 300); return; }
+  ensureAccountModal();
+  renderAccountBody();
+  if(_acctSession && !_acctState.loaded) loadAccountSummary();
+  var m = document.getElementById('wo-account-backdrop');
+  m.style.display = 'flex';
+  requestAnimationFrame(function(){ m.style.background = 'rgba(0,0,0,.5)'; });
+}
+function closeAccountModal(){
+  var m = document.getElementById('wo-account-backdrop');
+  if(!m) return;
+  m.style.background = 'rgba(0,0,0,0)';
+  setTimeout(function(){ m.style.display = 'none'; }, 200);
+}
+
+function renderAccountBody(){
+  var body = document.getElementById('wo-acct-body');
+  if(!body) return;
+  if(!_acctSession){ body.innerHTML = acctAuthFormHtml(); wireAcctAuthForm(); return; }
+  if(!_acctState.loaded){ body.innerHTML = '<div style="padding:24px 0;text-align:center;color:var(--wo-text,#888);opacity:.7;">Loading\\u2026</div>'; return; }
+  if(_acctState.error){
+    body.innerHTML = '<div style="color:#e5798a;font-size:13px;margin-bottom:10px;">'+escapeHtml(_acctState.error)+'</div><button id="wo-acct-signout" style="'+WO_GHOST_BTN_CSS+'">Sign Out</button>';
+    document.getElementById('wo-acct-signout').onclick = signOutAccount;
+    return;
+  }
+  body.innerHTML = _acctState.linked ? acctLinkedHtml() : acctPhoneLinkHtml();
+  wireAcctLinkedOrPhoneForm();
+}
+
+function acctAuthFormHtml(){
+  var isSignup = _acctAuthMode === 'signup';
+  return '<div id="wo-acct-err" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+    '<input id="wo-acct-email" type="email" placeholder="Email" autocomplete="email" style="'+WO_INPUT_CSS+'">' +
+    '<input id="wo-acct-password" type="password" placeholder="Password" autocomplete="'+(isSignup?'new-password':'current-password')+'" style="'+WO_INPUT_CSS+'">' +
+    '<button id="wo-acct-submit" style="'+WO_PRIMARY_BTN_CSS+'">'+(isSignup?'Create Account':'Sign In')+'</button>' +
+    '<div style="text-align:center;margin-top:14px;font-size:13px;color:var(--wo-text,#888);opacity:.8;">' +
+      (isSignup ? 'Already have an account? <a href="#" id="wo-acct-switch" style="color:var(--wo-accent,#1a1a1a);font-weight:600;">Sign in</a>'
+                : "New here? <a href=\\"#\\" id=\\"wo-acct-switch\\" style=\\"color:var(--wo-accent,#1a1a1a);font-weight:600;\\">Create an account</a>") +
+    '</div>';
+}
+function wireAcctAuthForm(){
+  var btn = document.getElementById('wo-acct-submit');
+  if(btn) btn.onclick = submitAcctAuth;
+  var sw = document.getElementById('wo-acct-switch');
+  if(sw) sw.onclick = function(e){ e.preventDefault(); _acctAuthMode = _acctAuthMode === 'signin' ? 'signup' : 'signin'; renderAccountBody(); };
+}
+function showAcctErr(msg){ var e = document.getElementById('wo-acct-err'); if(e) e.textContent = msg || ''; }
+function submitAcctAuth(){
+  var email = (document.getElementById('wo-acct-email').value || '').trim();
+  var password = document.getElementById('wo-acct-password').value || '';
+  showAcctErr('');
+  if(!email || !password){ showAcctErr('Email and password are required.'); return; }
+  var btn = document.getElementById('wo-acct-submit');
+  btn.disabled = true;
+  var action = _acctAuthMode === 'signup' ? _sb.auth.signUp({ email: email, password: password }) : _sb.auth.signInWithPassword({ email: email, password: password });
+  action.then(function(res){
+    btn.disabled = false;
+    if(res.error){ showAcctErr(res.error.message); return; }
+    return _sb.auth.getSession().then(function(sres){
+      _acctSession = sres.data.session;
+      if(!_acctSession){ showAcctErr('Check your email to confirm your account, then sign in.'); return; }
+      _acctState = { tab: 'summary', loaded: false, linked: false, customer: null, giftCards: [] };
+      loadAccountSummary();
+    });
+  }).catch(function(){ btn.disabled = false; showAcctErr('Something went wrong. Try again.'); });
+}
+function signOutAccount(){
+  if(_sb) _sb.auth.signOut();
+  _acctSession = null;
+  _acctState = { tab: 'summary', loaded: false, linked: false, customer: null, giftCards: [] };
+  closeAccountModal();
+}
+function loadAccountSummary(){
+  fetch(ACCOUNT_API_BASE + '/public/account/summary?store_id=' + encodeURIComponent(WO_STORE_ID), { headers: { Authorization: 'Bearer ' + _acctSession.access_token } })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d.ok) throw new Error(d.error || 'Could not load your account.');
+      _acctState.linked = d.linked; _acctState.customer = d.customer; _acctState.giftCards = d.giftCards || []; _acctState.error = null;
+    })
+    .catch(function(e){ _acctState.error = e.message; })
+    .then(function(){ _acctState.loaded = true; renderAccountBody(); });
+}
+
+function acctPhoneLinkHtml(){
+  return '<p style="font-size:13px;color:var(--wo-text,#888);opacity:.8;margin-top:-6px;">Verify your phone number to see your orders, trade credit, loyalty points and more.</p>' +
+    '<div id="wo-acct-err" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+    '<input id="wo-acct-phone" type="tel" placeholder="Phone number" autocomplete="tel" style="'+WO_INPUT_CSS+'">' +
+    '<button id="wo-acct-send-code" style="'+WO_PRIMARY_BTN_CSS+'">Send Code</button>' +
+    '<div id="wo-acct-code-section" style="display:none;margin-top:14px;">' +
+      '<input id="wo-acct-code" inputmode="numeric" maxlength="6" placeholder="Verification code" style="'+WO_INPUT_CSS+'">' +
+      '<button id="wo-acct-verify-code" style="'+WO_PRIMARY_BTN_CSS+'">Verify</button>' +
+    '</div>' +
+    '<button id="wo-acct-signout" style="'+WO_GHOST_BTN_CSS+'">Sign Out</button>';
+}
+function wireAcctLinkedOrPhoneForm(){
+  var signOutBtn = document.getElementById('wo-acct-signout');
+  if(signOutBtn) signOutBtn.onclick = signOutAccount;
+  var sendBtn = document.getElementById('wo-acct-send-code');
+  if(sendBtn) sendBtn.onclick = submitAcctStartPhoneVerify;
+  var verifyBtn = document.getElementById('wo-acct-verify-code');
+  if(verifyBtn) verifyBtn.onclick = submitAcctConfirmPhoneVerify;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-acct-tab]'), function(btn){
+    btn.onclick = function(){ switchAccountTab(btn.getAttribute('data-acct-tab')); };
+  });
+}
+function submitAcctStartPhoneVerify(){
+  var phone = (document.getElementById('wo-acct-phone').value || '').trim();
+  showAcctErr('');
+  fetch(ACCOUNT_API_BASE + '/public/account/phone/start-verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + _acctSession.access_token },
+    body: JSON.stringify({ storeId: WO_STORE_ID, phone: phone })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(!d.ok){ showAcctErr(d.error || 'Could not send code.'); return; }
+    _acctPendingPhone = phone;
+    var sec = document.getElementById('wo-acct-code-section');
+    if(sec) sec.style.display = 'block';
+  }).catch(function(){ showAcctErr('Could not send code. Try again.'); });
+}
+function submitAcctConfirmPhoneVerify(){
+  var code = (document.getElementById('wo-acct-code').value || '').trim();
+  showAcctErr('');
+  fetch(ACCOUNT_API_BASE + '/public/account/phone/confirm-verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + _acctSession.access_token },
+    body: JSON.stringify({ storeId: WO_STORE_ID, phone: _acctPendingPhone, code: code })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(!d.ok){ showAcctErr(d.error || 'That code was not correct.'); return; }
+    _acctState.linked = d.linked; _acctState.customer = d.customer; _acctState.giftCards = d.giftCards || []; _acctState.loaded = true; _acctState.error = null;
+    renderAccountBody();
+  }).catch(function(){ showAcctErr('That code was not correct.'); });
+}
+
+var ACCT_TABS = [['summary','Summary'],['orders','Orders'],['in-store','In-Store'],['consignments','Consignments'],['wishlist','Wishlist']];
+var ACCT_TAB_ENDPOINT = { orders: 'orders', 'in-store': 'in-store', consignments: 'consignments', wishlist: 'wishlist' };
+function acctLinkedHtml(){
+  var c = _acctState.customer || {};
+  return '<div style="font-weight:700;font-size:15px;margin-bottom:14px;">'+escapeHtml(c.name || 'Welcome back')+'</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;">' +
+    ACCT_TABS.map(function(t){
+      var on = _acctState.tab === t[0];
+      return '<button data-acct-tab="'+t[0]+'" style="padding:7px 12px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;border:1.5px solid '+(on?'var(--wo-accent,#1a1a1a)':'rgba(255,255,255,.2)')+';background:'+(on?'var(--wo-accent,#1a1a1a)':'none')+';color:'+(on?'var(--wo-surface,#fff)':'var(--wo-text,#1a1a1a)')+';">'+t[1]+'</button>';
+    }).join('') +
+    '</div>' +
+    '<div id="wo-acct-tab-content">'+acctTabContentHtml()+'</div>' +
+    '<button id="wo-acct-signout" style="'+WO_GHOST_BTN_CSS+'">Sign Out</button>';
+}
+function switchAccountTab(tab){
+  _acctState.tab = tab;
+  renderAccountBody();
+  if(tab !== 'summary' && !_acctState[tab]) loadAccountTab(tab);
+}
+function loadAccountTab(tab){
+  fetch(ACCOUNT_API_BASE + '/public/account/' + ACCT_TAB_ENDPOINT[tab] + '?store_id=' + encodeURIComponent(WO_STORE_ID), { headers: { Authorization: 'Bearer ' + _acctSession.access_token } })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d.ok) throw new Error(d.error || 'Could not load this section.');
+      _acctState[tab] = d;
+    })
+    .catch(function(e){ _acctState[tab] = { error: e.message }; })
+    .then(function(){
+      var host = document.getElementById('wo-acct-tab-content');
+      if(host && _acctState.tab === tab) host.innerHTML = acctTabContentHtml();
+    });
+}
+function acctOrderLineHtml(o){
+  var items = (o.items || []).map(function(it){ return escapeHtml(it.title) + ' \\u00d7' + it.quantity; }).join(', ');
+  var date = o.created_at ? new Date(o.created_at).toLocaleDateString() : '';
+  return '<div style="display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.1);font-size:13px;">' +
+    '<div><div style="font-weight:700;">'+[date, o.confirmation_number].filter(Boolean).map(escapeHtml).join(' \\u00b7 ')+'</div>' +
+    '<div style="color:var(--wo-text,#888);opacity:.75;">'+(items || 'No items on file')+'</div></div>' +
+    '<div style="font-weight:700;white-space:nowrap;">'+(o.total != null ? '$'+Number(o.total).toFixed(2) : '')+'</div></div>';
+}
+function acctTabContentHtml(){
+  var t = _acctState.tab;
+  if(t === 'summary'){
+    var c = _acctState.customer;
+    if(!c) return '<div style="color:var(--wo-text,#888);opacity:.7;">No account details yet.</div>';
+    var giftCardsHtml = (_acctState.giftCards || []).length
+      ? '<div style="margin-top:12px;"><div style="font-weight:700;font-size:13px;margin-bottom:6px;">Gift Cards</div>' +
+        _acctState.giftCards.map(function(g){ return '<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;"><span>'+escapeHtml(g.code)+'</span><span>$'+Number(g.balance).toFixed(2)+'</span></div>'; }).join('') + '</div>'
+      : '';
+    return '<div style="display:flex;justify-content:space-between;font-size:14px;padding:6px 0;"><span>Loyalty points</span><span>'+Number(c.loyaltyPointsBalance||0)+'</span></div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:14px;padding:6px 0;"><span>Trade credit</span><span>$'+Number(c.tradeCreditBalance||0).toFixed(2)+'</span></div>' +
+      giftCardsHtml;
+  }
+  var data = _acctState[t];
+  if(!data) return '<div style="color:var(--wo-text,#888);opacity:.7;">Loading\\u2026</div>';
+  if(data.error) return '<div style="color:#e5798a;font-size:13px;">'+escapeHtml(data.error)+'</div>';
+  if(t === 'orders') return (data.orders || []).length ? data.orders.map(acctOrderLineHtml).join('') : '<div style="color:var(--wo-text,#888);opacity:.7;">No online orders yet.</div>';
+  if(t === 'in-store') return (data.purchases || []).length ? data.purchases.map(acctOrderLineHtml).join('') : '<div style="color:var(--wo-text,#888);opacity:.7;">No in-store purchases on file.</div>';
+  if(t === 'consignments'){
+    if(!data.linked) return '<div style="color:var(--wo-text,#888);opacity:.7;">No consignment account matched to this phone or email.</div>';
+    if(!(data.items || []).length) return '<div style="color:var(--wo-text,#888);opacity:.7;">No consigned items yet.</div>';
+    return data.items.map(function(i){
+      return '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.1);font-size:13px;"><span>'+escapeHtml(i.item_name)+'</span><span>'+escapeHtml(i.status)+(i.sale_price ? ' \\u00b7 $'+Number(i.sale_price).toFixed(2) : '')+'</span></div>';
+    }).join('');
+  }
+  if(t === 'wishlist'){
+    if(!(data.items || []).length) return '<div style="color:var(--wo-text,#888);opacity:.7;">Your wishlist is empty.</div>';
+    return data.items.map(function(i){ return '<div style="padding:6px 0;font-size:13px;">'+escapeHtml(i.item || i.name || 'Item')+'</div>'; }).join('');
+  }
+  return '';
+}
+window.WO.openAccount = openAccountModal;
+
 function findDataCarrier(btn){
   var node = btn.parentElement;
   for (var i = 0; i < 6 && node; i++){
@@ -1741,6 +1999,9 @@ document.addEventListener('DOMContentLoaded', function(){
   }
   var toggle = document.getElementById('wo-cart-toggle');
   if(toggle){ toggle.addEventListener('click', function(e){ e.preventDefault(); openCartDrawer(); }); }
+  var acctToggle = document.getElementById('wo-account-toggle');
+  if(acctToggle){ acctToggle.addEventListener('click', function(e){ e.preventDefault(); openAccountModal(); }); }
+  initAccountAuth();
 
   initProductBrowsing();
   initTeamTheme();
@@ -1938,7 +2199,7 @@ export default {
       if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: ch });
 
       if (path === "/wo-cart.js") {
-        const script = buildCartScript(env.STRIPE_PUBLISHABLE_KEY || "", url.origin, getShippingTiers(env));
+        const script = buildCartScript(env.STRIPE_PUBLISHABLE_KEY || "", url.origin, getShippingTiers(env), getInventoryApiBase(env), getStoreId(env));
         return new Response(script, { headers: Object.assign({ "Content-Type": "application/javascript; charset=utf-8" }, ch) });
       }
       if (path === "/api/cart/create-intent" && request.method === "POST") return await handleCreateIntent(request, env, origin);
