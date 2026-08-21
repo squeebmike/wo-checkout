@@ -1071,8 +1071,13 @@ function shippingForPrice(price, id){
 }
 function computeTotals(cart){
   var subtotal = cart.reduce(function(s,i){ var qty = Math.max(1, parseInt(i.qty,10)||1); return s + (Number(i.price)||0) * qty; }, 0);
-  var shipping = cart.reduce(function(s,i){ var qty = Math.max(1, parseInt(i.qty,10)||1); return s + shippingForPrice(i.price, i.id) * qty; }, 0);
-  return { subtotal: subtotal, shipping: shipping, grand: subtotal + shipping };
+  // Comic preorders (kind:'preorder') never pay this flat per-order shipping
+  // tier -- their own checkout (a separate step, per FOC cycle) quotes real
+  // pickup/shipping on its own, so folding them into this estimate would
+  // just be wrong, not just redundant.
+  var shipping = cart.reduce(function(s,i){ if(i.kind==='preorder')return s; var qty = Math.max(1, parseInt(i.qty,10)||1); return s + shippingForPrice(i.price, i.id) * qty; }, 0);
+  var hasPreorder = cart.some(function(i){ return i.kind==='preorder'; });
+  return { subtotal: subtotal, shipping: shipping, grand: subtotal + shipping, hasPreorder: hasPreorder };
 }
 
 function renderDrawerItems(){
@@ -1089,6 +1094,7 @@ function renderDrawerItems(){
       return '<div style="display:flex;gap:14px;margin-bottom:18px;align-items:center;padding-bottom:18px;border-bottom:1px solid rgba(255,255,255,.1);">' +
         (i.image ? '<img src="'+i.image+'" style="width:84px;height:84px;object-fit:cover;border-radius:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.25);">' : '') +
         '<div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;color:var(--wo-text,#1a1a1a);line-height:1.3;margin-bottom:4px;">'+(i.name||'Item')+'</div>' +
+        (i.kind==='preorder' ? '<div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--wo-accent,#8bd450);margin:-2px 0 6px;">Comic preorder'+(i.focDate?' · FOC '+i.focDate:'')+'</div>' : '') +
         '<div style="font-size:15px;color:var(--wo-text,#555);opacity:.85;font-weight:600;margin-bottom:8px;">$'+(Number(i.price)||0).toFixed(2)+(qty>1?' \\u00d7 '+qty+' = $'+lineTotal.toFixed(2):'')+'</div>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
           '<button data-qty-id="'+i.id+'" data-qty-delta="-1" aria-label="Decrease quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;">\\u2212</button>' +
@@ -1111,7 +1117,8 @@ function renderDrawerItems(){
   if(totalsEl) totalsEl.innerHTML =
     '<div style="display:flex;justify-content:space-between;margin-bottom:6px;color:var(--wo-text,#444);"><span>Subtotal</span><span>$'+totals.subtotal.toFixed(2)+'</span></div>' +
     '<div style="display:flex;justify-content:space-between;margin-bottom:10px;color:var(--wo-text,#777);opacity:.7;"><span>Shipping</span><span>$'+totals.shipping.toFixed(2)+'</span></div>' +
-    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--wo-text,#1a1a1a);padding-top:10px;border-top:1px solid rgba(255,255,255,.15);"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>';
+    '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--wo-text,#1a1a1a);padding-top:10px;border-top:1px solid rgba(255,255,255,.15);"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>' +
+    (totals.hasPreorder ? '<div style="font-size:11px;color:var(--wo-text,#888);opacity:.75;margin-top:10px;line-height:1.4;">Comic preorders are paid separately, one FOC week at a time, with their own pickup/shipping choice -- checkout will walk you through each.</div>' : '');
   renderCartBadge();
 }
 
@@ -1714,6 +1721,12 @@ window.WO.joinFanClub = joinFanClub;
 window.WO.makePledge = makePledge;
 window.WO.getCart = getCart;
 window.WO.removeFromCart = removeFromCart;
+// Exposed so the comic-preorder flow (preorders.js, loaded site-wide) can
+// merge saved picks back in with an exact quantity and remove just-paid
+// preorder lines after its own checkout -- addToCart only ever does "add
+// one more", which can't restore an exact server-saved quantity or do a
+// partial (preorder-lines-only) cart clear.
+window.WO.setCart = setCart;
 
 // Account modal (email/password + a mandatory phone-verify gate before
 // showing any account data) retired -- superseded by the /account,
