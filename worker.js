@@ -1027,24 +1027,37 @@ function ensureAddToCartAnimCss(){
     '@keyframes woAtcBounce{0%,100%{transform:scale(1)}30%{transform:scale(1.35)}50%{transform:scale(.9)}70%{transform:scale(1.12)}100%{transform:scale(1)}}';
   document.head.appendChild(style);
 }
-function bounceCartIcon(){
+// The cart icon (#wo-cart-toggle) lives inside the Webflow navbar's own
+// collapsible .w-nav-menu -- on mobile/tablet that whole menu is
+// display:none (zero-size) until the hamburger is tapped open, so the
+// icon is never a valid animation target there. Falls back to the
+// hamburger button itself, which is always visible, so mobile still gets
+// a flourish instead of the whole thing silently no-oping.
+function resolveCartFlourishTarget(){
   var toggle = document.getElementById('wo-cart-toggle');
-  if (!toggle) return;
-  toggle.style.animation = 'none';
-  void toggle.offsetWidth; // restart the CSS animation if it's already mid-bounce from a fast double-add
-  toggle.style.animation = 'woAtcBounce .5s cubic-bezier(.34,1.56,.64,1)';
+  if (toggle && toggle.getBoundingClientRect().width) return toggle;
+  var hamburger = document.querySelector('#navbarID .w-nav-button, .navbar6_menu-button');
+  if (hamburger && hamburger.getBoundingClientRect().width) return hamburger;
+  return null;
 }
-function flyClone(visual, fromRect, toRect, buildKeyframes, duration){
+function bounceCartIcon(target){
+  var el = target || resolveCartFlourishTarget();
+  if (!el) return;
+  el.style.animation = 'none';
+  void el.offsetWidth; // restart the CSS animation if it's already mid-bounce from a fast double-add
+  el.style.animation = 'woAtcBounce .5s cubic-bezier(.34,1.56,.64,1)';
+}
+function flyClone(visual, fromRect, toRect, buildKeyframes, duration, target){
   var clone = visual.cloneNode(false);
   clone.style.cssText = 'position:fixed;left:' + fromRect.left + 'px;top:' + fromRect.top + 'px;width:' + fromRect.width + 'px;height:' + fromRect.height + 'px;margin:0;z-index:2147483600;pointer-events:none;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);object-fit:cover;background:' + (visual.tagName === 'IMG' ? 'transparent' : 'var(--wo-accent,#8bd450)') + ';';
   document.body.appendChild(clone);
   var dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
   var dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
   var anim = clone.animate(buildKeyframes(dx, dy), { duration: duration, easing: 'cubic-bezier(.3,.6,.3,1)', fill: 'forwards' });
-  anim.onfinish = function(){ clone.remove(); bounceCartIcon(); };
+  anim.onfinish = function(){ clone.remove(); bounceCartIcon(target); };
 }
 function playAddToCartFlourish(sourceEl){
-  var toggle = document.getElementById('wo-cart-toggle');
+  var toggle = resolveCartFlourishTarget();
   if (!toggle) return;
   var toRect = toggle.getBoundingClientRect();
   if (!toRect.width) return;
@@ -1053,7 +1066,7 @@ function playAddToCartFlourish(sourceEl){
   if (variant === 0 || variant === 1) {
     var img = findNearbyProductImage(sourceEl);
     var fromRect = (img || sourceEl).getBoundingClientRect();
-    if (!fromRect.width) { bounceCartIcon(); return; }
+    if (!fromRect.width) { bounceCartIcon(toggle); return; }
     var size = Math.min(64, fromRect.width, fromRect.height) || 48;
     var startRect = { left: fromRect.left + fromRect.width / 2 - size / 2, top: fromRect.top + fromRect.height / 2 - size / 2, width: size, height: size };
     var visual = img ? img.cloneNode(false) : document.createElement('div');
@@ -1066,7 +1079,7 @@ function playAddToCartFlourish(sourceEl){
           { transform: 'translate(' + (dx * 0.5) + 'px,' + (dy * 0.5 - 60) + 'px) scale(.8) rotate(160deg)', filter: 'brightness(1.6) saturate(2) hue-rotate(40deg)', offset: .5 },
           { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.15) rotate(380deg)', filter: 'brightness(1) saturate(1)', opacity: 0, offset: 1 },
         ];
-      }, 650);
+      }, 650, toggle);
     } else {
       // Comic-panel swipe: a skewed dash across the screen, like flipping
       // to the next panel, rather than a straight-line fly-to-cart.
@@ -1077,7 +1090,7 @@ function playAddToCartFlourish(sourceEl){
           { transform: 'translate(' + (dx * 0.75) + 'px,' + (dy * 0.6) + 'px) skewX(14deg) scale(.5)', offset: .7 },
           { transform: 'translate(' + dx + 'px,' + dy + 'px) skewX(0deg) scale(.15)', opacity: 0, offset: 1 },
         ];
-      }, 550);
+      }, 550, toggle);
     }
   } else if (variant === 2) {
     // Arcade combo counter: a bold outlined "+1" pops straight up out of
@@ -1086,7 +1099,7 @@ function playAddToCartFlourish(sourceEl){
     counter.textContent = '+1';
     counter.style.cssText = 'position:fixed;left:' + (toRect.left + toRect.width / 2) + 'px;top:' + toRect.top + 'px;z-index:2147483600;pointer-events:none;font-family:Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;font-size:22px;font-weight:900;color:#ffd23f;-webkit-text-stroke:2px #1a1a1a;text-shadow:2px 2px 0 #1a1a1a;animation:woAtcPop .75s ease-out forwards;';
     document.body.appendChild(counter);
-    setTimeout(function(){ counter.remove(); bounceCartIcon(); }, 750);
+    setTimeout(function(){ counter.remove(); bounceCartIcon(toggle); }, 750);
   } else {
     // Foil pack-rip: a rainbow diagonal shine sweeps across the cart icon,
     // like the foil on a freshly opened booster.
@@ -1097,7 +1110,7 @@ function playAddToCartFlourish(sourceEl){
     shine.appendChild(bar);
     document.body.appendChild(shine);
     var anim = bar.animate([{ left: '-60%' }, { left: '140%' }], { duration: 520, easing: 'ease-in-out' });
-    anim.onfinish = function(){ shine.remove(); bounceCartIcon(); };
+    anim.onfinish = function(){ shine.remove(); bounceCartIcon(toggle); };
   }
 }
 function removeFromCart(id){ setCart(getCart().filter(function(i){ return i.id !== id; })); renderDrawerItems(); }
