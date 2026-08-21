@@ -973,7 +973,11 @@ var WO_STORE_ID = ${JSON.stringify(storeId)};
 
 function getCart(){ try { return JSON.parse(localStorage.getItem(CART_KEY) || '[]'); } catch(e){ return []; } }
 function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c)); renderCartBadge(); }
-function addToCart(item){
+// sourceEl is whatever the customer actually clicked (an "Add to Cart"
+// button) -- used only to find a nearby product image for the flourish
+// animation below. Never required: callers that don't have one (e.g. a
+// deep-link auto-add) just get a flourish variant that doesn't need it.
+function addToCart(item, sourceEl){
   var cart = getCart();
   // "available" comes from the item's real Supabase stock count (embedded
   // on the card by renderLiveInventory / the wo-d-qty carrier field) --
@@ -991,7 +995,110 @@ function addToCart(item){
     cart.push(Object.assign({}, item, { qty: 1 }));
   }
   setCart(cart);
-  openCartDrawer();
+  // The drawer used to pop open on every add, which cut a browsing session
+  // short every single time -- a quick flourise toward the cart icon
+  // confirms the add without stopping anyone from grabbing more stuff.
+  playAddToCartFlourish(sourceEl);
+}
+// Four 90s-throwback ways to confirm something landed in the cart, picked
+// at random so it stays fun instead of samey. Two fly a copy of the
+// product from wherever it was clicked over to the cart icon (trading-card
+// catch, comic-panel swipe); two land entirely at the cart icon itself
+// (arcade combo counter, foil pack-rip shimmer) -- those two also work
+// fine with no sourceEl. Pure visual sugar: setCart()/renderCartBadge()
+// above have already done the real work by the time any of this runs.
+function findNearbyProductImage(el){
+  var node = el;
+  for (var i = 0; i < 6 && node; i++) {
+    if (node.querySelector) {
+      var img = node.querySelector('img');
+      if (img && (img.currentSrc || img.src)) return img;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+function ensureAddToCartAnimCss(){
+  if (document.getElementById('wo-atc-anim-css')) return;
+  var style = document.createElement('style');
+  style.id = 'wo-atc-anim-css';
+  style.textContent =
+    '@keyframes woAtcPop{0%{transform:translate(-50%,-40%) scale(.3);opacity:0}35%{transform:translate(-50%,-95%) scale(1.15);opacity:1}70%{transform:translate(-50%,-118%) scale(1);opacity:1}100%{transform:translate(-50%,-155%) scale(.85);opacity:0}}' +
+    '@keyframes woAtcBounce{0%,100%{transform:scale(1)}30%{transform:scale(1.35)}50%{transform:scale(.9)}70%{transform:scale(1.12)}100%{transform:scale(1)}}';
+  document.head.appendChild(style);
+}
+function bounceCartIcon(){
+  var toggle = document.getElementById('wo-cart-toggle');
+  if (!toggle) return;
+  toggle.style.animation = 'none';
+  void toggle.offsetWidth; // restart the CSS animation if it's already mid-bounce from a fast double-add
+  toggle.style.animation = 'woAtcBounce .5s cubic-bezier(.34,1.56,.64,1)';
+}
+function flyClone(visual, fromRect, toRect, buildKeyframes, duration){
+  var clone = visual.cloneNode(false);
+  clone.style.cssText = 'position:fixed;left:' + fromRect.left + 'px;top:' + fromRect.top + 'px;width:' + fromRect.width + 'px;height:' + fromRect.height + 'px;margin:0;z-index:2147483600;pointer-events:none;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);object-fit:cover;background:' + (visual.tagName === 'IMG' ? 'transparent' : 'var(--wo-accent,#8bd450)') + ';';
+  document.body.appendChild(clone);
+  var dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
+  var dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
+  var anim = clone.animate(buildKeyframes(dx, dy), { duration: duration, easing: 'cubic-bezier(.3,.6,.3,1)', fill: 'forwards' });
+  anim.onfinish = function(){ clone.remove(); bounceCartIcon(); };
+}
+function playAddToCartFlourish(sourceEl){
+  var toggle = document.getElementById('wo-cart-toggle');
+  if (!toggle) return;
+  var toRect = toggle.getBoundingClientRect();
+  if (!toRect.width) return;
+  ensureAddToCartAnimCss();
+  var variant = sourceEl ? Math.floor(Math.random() * 4) : (Math.random() < 0.5 ? 2 : 3);
+  if (variant === 0 || variant === 1) {
+    var img = findNearbyProductImage(sourceEl);
+    var fromRect = (img || sourceEl).getBoundingClientRect();
+    if (!fromRect.width) { bounceCartIcon(); return; }
+    var size = Math.min(64, fromRect.width, fromRect.height) || 48;
+    var startRect = { left: fromRect.left + fromRect.width / 2 - size / 2, top: fromRect.top + fromRect.height / 2 - size / 2, width: size, height: size };
+    var visual = img ? img.cloneNode(false) : document.createElement('div');
+    if (variant === 0) {
+      // Trading-card catch: arcs up and spins into the cart with a holofoil
+      // brightness/hue flash mid-flight, like a pack pull landing in a box.
+      flyClone(visual, startRect, toRect, function(dx, dy){
+        return [
+          { transform: 'translate(0,0) scale(1) rotate(0deg)', filter: 'brightness(1) saturate(1)', offset: 0 },
+          { transform: 'translate(' + (dx * 0.5) + 'px,' + (dy * 0.5 - 60) + 'px) scale(.8) rotate(160deg)', filter: 'brightness(1.6) saturate(2) hue-rotate(40deg)', offset: .5 },
+          { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(.15) rotate(380deg)', filter: 'brightness(1) saturate(1)', opacity: 0, offset: 1 },
+        ];
+      }, 650);
+    } else {
+      // Comic-panel swipe: a skewed dash across the screen, like flipping
+      // to the next panel, rather than a straight-line fly-to-cart.
+      flyClone(visual, startRect, toRect, function(dx, dy){
+        return [
+          { transform: 'translate(0,0) skewX(0deg) scale(1)', offset: 0 },
+          { transform: 'translate(' + (dx * 0.35) + 'px,' + (dy * 0.15) + 'px) skewX(-18deg) scale(.9)', offset: .25 },
+          { transform: 'translate(' + (dx * 0.75) + 'px,' + (dy * 0.6) + 'px) skewX(14deg) scale(.5)', offset: .7 },
+          { transform: 'translate(' + dx + 'px,' + dy + 'px) skewX(0deg) scale(.15)', opacity: 0, offset: 1 },
+        ];
+      }, 550);
+    }
+  } else if (variant === 2) {
+    // Arcade combo counter: a bold outlined "+1" pops straight up out of
+    // the cart icon, like a score bump.
+    var counter = document.createElement('div');
+    counter.textContent = '+1';
+    counter.style.cssText = 'position:fixed;left:' + (toRect.left + toRect.width / 2) + 'px;top:' + toRect.top + 'px;z-index:2147483600;pointer-events:none;font-family:Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;font-size:22px;font-weight:900;color:#ffd23f;-webkit-text-stroke:2px #1a1a1a;text-shadow:2px 2px 0 #1a1a1a;animation:woAtcPop .75s ease-out forwards;';
+    document.body.appendChild(counter);
+    setTimeout(function(){ counter.remove(); bounceCartIcon(); }, 750);
+  } else {
+    // Foil pack-rip: a rainbow diagonal shine sweeps across the cart icon,
+    // like the foil on a freshly opened booster.
+    var shine = document.createElement('div');
+    shine.style.cssText = 'position:fixed;left:' + toRect.left + 'px;top:' + toRect.top + 'px;width:' + toRect.width + 'px;height:' + toRect.height + 'px;z-index:2147483600;pointer-events:none;overflow:hidden;border-radius:6px;';
+    var bar = document.createElement('div');
+    bar.style.cssText = 'position:absolute;top:-50%;left:-60%;width:40%;height:200%;background:linear-gradient(120deg,transparent,rgba(255,255,255,.9) 40%,#ffd23f 48%,#ff5fa2 55%,#5fd0ff 62%,rgba(255,255,255,.9) 70%,transparent);transform:rotate(20deg);';
+    shine.appendChild(bar);
+    document.body.appendChild(shine);
+    var anim = bar.animate([{ left: '-60%' }, { left: '140%' }], { duration: 520, easing: 'ease-in-out' });
+    anim.onfinish = function(){ shine.remove(); bounceCartIcon(); };
+  }
 }
 function removeFromCart(id){ setCart(getCart().filter(function(i){ return i.id !== id; })); renderDrawerItems(); }
 // Lets a customer bump quantity up/down right in the cart drawer instead of
@@ -1593,7 +1700,7 @@ function openWoLiveItemDetail(item){
   card.querySelector('[data-wo-close-detail]').addEventListener('click', function(){ overlay.remove(); });
   card.querySelector('[data-wo-add-to-cart]').addEventListener('click', function(e){
     e.preventDefault();
-    addToCart({ id:item.id, name:item.name, price:Number(item.price||0), image:item.image||'', available: stockQty || 1 });
+    addToCart({ id:item.id, name:item.name, price:Number(item.price||0), image:item.image||'', available: stockQty || 1 }, e.currentTarget);
     overlay.remove();
   });
 }
@@ -1674,7 +1781,7 @@ function renderLiveInventory(){
           e.preventDefault();
           var product = readProductFromCarrier(findDataCarrier(btn));
           if(!product || !product.id) return;
-          addToCart(product);
+          addToCart(product, btn);
         });
       });
 
@@ -1727,6 +1834,10 @@ window.WO.removeFromCart = removeFromCart;
 // one more", which can't restore an exact server-saved quantity or do a
 // partial (preorder-lines-only) cart clear.
 window.WO.setCart = setCart;
+// Lets other cart-writing code (preorders.js, adding a comic preorder)
+// trigger the exact same add-to-cart flourish instead of building its own,
+// so a comic pull lands with the same 90s flair as a regular item.
+window.WO.playAddToCartFlourish = playAddToCartFlourish;
 
 // Account modal (email/password + a mandatory phone-verify gate before
 // showing any account data) retired -- superseded by the /account,
@@ -1851,7 +1962,7 @@ document.addEventListener('DOMContentLoaded', function(){
       e.preventDefault();
       var product = readProductFromCarrier(findDataCarrier(btn));
       if(!product || !product.id){ console.warn('[WO] Could not find product data for this button.'); return; }
-      addToCart(product);
+      addToCart(product, btn);
     });
   });
 
