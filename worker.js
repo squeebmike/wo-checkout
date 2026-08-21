@@ -1027,18 +1027,23 @@ function ensureAddToCartAnimCss(){
     '@keyframes woAtcBounce{0%,100%{transform:scale(1)}30%{transform:scale(1.35)}50%{transform:scale(.9)}70%{transform:scale(1.12)}100%{transform:scale(1)}}';
   document.head.appendChild(style);
 }
-// The cart icon (#wo-cart-toggle) lives inside the Webflow navbar's own
-// collapsible .w-nav-menu -- on mobile/tablet that whole menu is
-// display:none (zero-size) until the hamburger is tapped open, so the
-// icon is never a valid animation target there. Falls back to the
-// hamburger button itself, which is always visible, so mobile still gets
-// a flourish instead of the whole thing silently no-oping.
+// #wo-cart-toggle sits alongside the hamburger button in the nav bar, not
+// nested inside the collapsible mobile menu, so the menu's own collapse
+// was never actually the problem. What DOES hide it is the nav's separate
+// scroll-to-hide behavior (#navbarID.is-hidden, a translateY(-110%) that
+// still reports a nonzero-width rect since it's a transform, not a
+// display change) -- scroll down on mobile, add something to the cart,
+// and the icon is laid out fine but currently off the top of the screen.
+// Un-hides the nav first so there's always something real and visible to
+// animate toward, on any device, in any scroll position.
 function resolveCartFlourishTarget(){
+  var navbar = document.getElementById('navbarID');
+  if (navbar) navbar.classList.remove('is-hidden');
   var toggle = document.getElementById('wo-cart-toggle');
-  if (toggle && toggle.getBoundingClientRect().width) return toggle;
-  var hamburger = document.querySelector('#navbarID .w-nav-button, .navbar6_menu-button');
-  if (hamburger && hamburger.getBoundingClientRect().width) return hamburger;
-  return null;
+  if (!toggle) return null;
+  var rect = toggle.getBoundingClientRect();
+  if (!rect.width || rect.bottom <= 0 || rect.top >= window.innerHeight) return null;
+  return toggle;
 }
 function bounceCartIcon(target){
   var el = target || resolveCartFlourishTarget();
