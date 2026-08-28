@@ -50,8 +50,6 @@ assert.match(script, /prioritizeImage\?'eager':'lazy'/);
 assert.match(script, /prioritizeImage\?' fetchpriority="high"'/);
 assert.match(script, /state\.offset===0&&index===0/);
 assert.match(script, /window\.__MP_STOREFRONT_PREFETCH__/,'the renderer must reuse the earlier site-bundle first-page request');
-assert.match(script, /data-mp-inventory-preview/,'the renderer must adopt the early first-card preview instead of clearing it');
-assert.match(script, /data-mp-first-product-image/,'the renderer must preserve the already-loaded first product image DOM node');
 assert.match(script, /data-wo-share-item/);
 assert.match(script, /\/share\/item\?id=/);
 assert.match(script, /Disney Lorcana/);

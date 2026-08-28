@@ -1811,14 +1811,10 @@ function renderLiveInventoryPaged(){
   var mount = document.getElementById('wo-live-shop');
   if(!mount) return;
   mount.setAttribute('data-wo-server-paged','true');
-  var grid = mount.querySelector('[data-mp-inventory-preview]');
-  var previewCard = grid && grid.querySelector('[data-mp-first-card]');
-  if(!grid){
-    mount.innerHTML = '';
-    grid = document.createElement('div');
-    grid.className = 'wo-live-grid';
-    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;align-items:stretch;min-height:110vh;';
-  }
+  mount.innerHTML = '';
+  var grid = document.createElement('div');
+  grid.className = 'wo-live-grid';
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;align-items:stretch;min-height:110vh;';
   var status = document.createElement('div');
   status.setAttribute('aria-live','polite');
   status.style.cssText = 'padding:18px;text-align:center;color:var(--wo-text,#888);opacity:.8;';
@@ -1828,8 +1824,8 @@ function renderLiveInventoryPaged(){
   var state = { offset:0, total:0, hasMore:true, loading:false, category:'all', type:'all', query:'', token:0 };
   var timer = 0;
 
-  function itemCard(item, prioritizeImage, existingCard){
-    var card = existingCard || document.createElement('article');
+  function itemCard(item, prioritizeImage){
+    var card = document.createElement('article');
     card.className = 'wo-live-card';
     card.setAttribute('data-category', item.categorySlug || (item.category || '').toLowerCase());
     card.setAttribute('data-product-type', item.productTypeSlug || '');
@@ -1839,7 +1835,8 @@ function renderLiveInventoryPaged(){
     var image = item.image
       ? '<img loading="'+(prioritizeImage?'eager':'lazy')+'"'+(prioritizeImage?' fetchpriority="high"':'')+' decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
       : '<div aria-hidden="true" style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
-    var body = '<div class="wo-live-card-body" style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
+    card.innerHTML = image +
+      '<div class="wo-live-card-body" style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
       '<div style="font-size:14px;font-weight:600;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
       (metaLine?'<div style="font-size:12px;color:var(--wo-text,#888);opacity:.75;">'+escapeHtml(metaLine)+'</div>':'') +
       (item.productType?'<div style="font-size:10px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(item.productType)+'</div>':'') +
@@ -1848,16 +1845,6 @@ function renderLiveInventoryPaged(){
       '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
       '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
       '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';
-    var previewImage=existingCard&&existingCard.querySelector('[data-mp-first-product-image]');
-    if(previewImage&&previewImage.getAttribute('src')===String(item.image||'')){
-      Array.prototype.slice.call(card.children).forEach(function(child){if(child!==previewImage)child.remove();});
-      previewImage.removeAttribute('data-mp-first-product-image');
-      previewImage.alt=item.name||'';
-      card.insertAdjacentHTML('beforeend',body);
-    }else{
-      card.innerHTML=image+body;
-    }
-    card.removeAttribute('data-mp-first-card');
     card.addEventListener('click',function(event){ if(!event.target.closest('[data-wo-add-to-cart]')) openWoLiveItemDetail(item); });
     card.querySelector('[data-wo-add-to-cart]').addEventListener('click',function(event){
       event.preventDefault();
@@ -1869,7 +1856,7 @@ function renderLiveInventoryPaged(){
 
   function load(reset){
     if(state.loading || (!reset && !state.hasMore)) return;
-    if(reset){ state.offset=0;state.hasMore=true;if(!previewCard)grid.innerHTML='';mount.removeAttribute('data-wo-loaded');state.token++; }
+    if(reset){ state.offset=0;state.hasMore=true;grid.innerHTML='';mount.removeAttribute('data-wo-loaded');state.token++; }
     var token = state.token;
     state.loading = true;
     status.textContent = state.offset ? 'Loading more\u2026' : 'Loading inventory\u2026';
@@ -1885,13 +1872,7 @@ function renderLiveInventoryPaged(){
       .then(function(data){
         if(token!==state.token) return;
         var items=(data&&data.items)||[];
-        items.forEach(function(item,index){
-          var existing=state.offset===0&&index===0?previewCard:null;
-          grid.appendChild(itemCard(item,state.offset===0&&index===0,existing));
-          if(existing)previewCard=null;
-        });
-        if(!items.length&&previewCard){previewCard.remove();previewCard=null;}
-        grid.removeAttribute('data-mp-inventory-preview');
+        items.forEach(function(item,index){ grid.appendChild(itemCard(item,state.offset===0&&index===0)); });
         state.total=Number(data.total)||items.length;
         state.offset=(Number(data.offset)||0)+items.length;
         state.hasMore=data.hasMore===true;
@@ -1908,8 +1889,8 @@ function renderLiveInventoryPaged(){
     clearTimeout(timer);
     timer=setTimeout(function(){state.category=category||'all';state.type=type||'all';state.query=query||'';load(true);},220);
   });
-  mount.insertBefore(controls.el,grid);
-  if(!grid.parentNode)mount.appendChild(grid);
+  mount.appendChild(controls.el);
+  mount.appendChild(grid);
   mount.appendChild(status);
   var observer=new IntersectionObserver(function(entries){if(entries.some(function(entry){return entry.isIntersecting;}))load(false);},{rootMargin:'600px 0px'});
   observer.observe(sentinel);
