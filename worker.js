@@ -1824,7 +1824,7 @@ function renderLiveInventoryPaged(){
   var state = { offset:0, total:0, hasMore:true, loading:false, category:'all', type:'all', query:'', token:0 };
   var timer = 0;
 
-  function itemCard(item){
+  function itemCard(item, prioritizeImage){
     var card = document.createElement('article');
     card.className = 'wo-live-card';
     card.setAttribute('data-category', item.categorySlug || (item.category || '').toLowerCase());
@@ -1833,7 +1833,7 @@ function renderLiveInventoryPaged(){
     var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
     var metaLine = [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' \u00b7 ');
     var image = item.image
-      ? '<img loading="lazy" decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
+      ? '<img loading="'+(prioritizeImage?'eager':'lazy')+'"'+(prioritizeImage?' fetchpriority="high"':'')+' decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
       : '<div aria-hidden="true" style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
     card.innerHTML = image +
       '<div class="wo-live-card-body" style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
@@ -1869,7 +1869,7 @@ function renderLiveInventoryPaged(){
       .then(function(data){
         if(token!==state.token) return;
         var items=(data&&data.items)||[];
-        items.forEach(function(item){ grid.appendChild(itemCard(item)); });
+        items.forEach(function(item,index){ grid.appendChild(itemCard(item,state.offset===0&&index===0)); });
         state.total=Number(data.total)||items.length;
         state.offset=(Number(data.offset)||0)+items.length;
         state.hasMore=data.hasMore===true;
