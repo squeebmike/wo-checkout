@@ -1820,6 +1820,7 @@ function renderLiveInventoryPaged(){
   status.style.cssText = 'padding:18px;text-align:center;color:var(--wo-text,#888);opacity:.8;';
   var sentinel = document.createElement('div');
   sentinel.style.cssText = 'height:1px;grid-column:1/-1;';
+  var pageSize = window.matchMedia && window.matchMedia('(max-width: 767px)').matches ? 12 : 36;
   var state = { offset:0, total:0, hasMore:true, loading:false, category:'all', type:'all', query:'', token:0 };
   var timer = 0;
 
@@ -1855,11 +1856,11 @@ function renderLiveInventoryPaged(){
 
   function load(reset){
     if(state.loading || (!reset && !state.hasMore)) return;
-    if(reset){ state.offset=0;state.hasMore=true;grid.innerHTML='';state.token++; }
+    if(reset){ state.offset=0;state.hasMore=true;grid.innerHTML='';mount.removeAttribute('data-wo-loaded');state.token++; }
     var token = state.token;
     state.loading = true;
     status.textContent = state.offset ? 'Loading more\u2026' : 'Loading inventory\u2026';
-    var params = new URLSearchParams({limit:'36',offset:String(state.offset)});
+    var params = new URLSearchParams({limit:String(pageSize),offset:String(state.offset)});
     if(state.category && state.category!=='all') params.set('category',state.category);
     if(state.type && state.type!=='all') params.set('type',state.type);
     if(state.query) params.set('q',state.query);
@@ -1875,8 +1876,9 @@ function renderLiveInventoryPaged(){
         if(state.offset || !state.total) grid.style.minHeight='0';
         status.textContent=state.total ? 'Showing '+state.offset+' of '+state.total : 'Nothing available in this section right now.';
         if(state.hasMore) grid.appendChild(sentinel);
+        mount.setAttribute('data-wo-loaded','true');
       })
-      .catch(function(){ if(token===state.token) status.textContent='Could not load inventory right now.'; })
+      .catch(function(){ if(token===state.token){ status.textContent='Could not load inventory right now.';mount.setAttribute('data-wo-loaded','true'); } })
       .finally(function(){ if(token===state.token) state.loading=false; });
   }
 
