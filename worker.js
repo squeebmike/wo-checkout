@@ -817,7 +817,14 @@ async function handlePledgeDonate(request, env, origin) {
 // ----------------------------------------------------------------------------
 async function handleInventoryList(request, env, origin) {
   const storeId = getStoreId(env);
-  const cacheKey = "inventory:" + storeId;
+  const incoming = new URL(request.url);
+  const forwarded = new URLSearchParams();
+  ['limit','offset','category','type','q'].forEach(function(key){
+    const value = incoming.searchParams.get(key);
+    if (value) forwarded.set(key, value.slice(0, 160));
+  });
+  const queryString = forwarded.toString();
+  const cacheKey = "inventory:" + storeId + (queryString ? ':' + queryString : '');
 
   try {
     const cached = await env.WO_RESERVATIONS.get(cacheKey);
@@ -831,18 +838,41 @@ async function handleInventoryList(request, env, origin) {
     // also where comic/signature/photo data now comes from -- fields this
     // Worker never had before because it never asked the real source for
     // them.
-    const result = await fetchInventoryApi(env, "/public/storefront?store_id=" + encodeURIComponent(storeId));
+    const result = await fetchInventoryApi(env, "/public/storefront?store_id=" + encodeURIComponent(storeId) + (queryString ? '&' + queryString : ''));
     if (!result.ok || !result.data || !result.data.ok) {
       const message = (result.data && result.data.error) || "Storefront is not published";
       return json({ ok: false, error: message }, result.status || 502, corsHeaders(origin));
     }
     var items = result.data.items || [];
 
-    var payload = JSON.stringify({ ok: true, items: items });
+    var payload = JSON.stringify({ ok: true, items: items, total:result.data.total == null ? items.length : result.data.total, offset:result.data.offset || 0, limit:result.data.limit || items.length, hasMore:result.data.hasMore === true, nextOffset:result.data.nextOffset, facets:result.data.facets || [] });
     try { await env.WO_RESERVATIONS.put(cacheKey, payload, { expirationTtl: INVENTORY_CACHE_TTL_SECONDS }); } catch (e) {}
     return new Response(payload, { headers: Object.assign({ "Content-Type": "application/json" }, corsHeaders(origin)) });
   } catch (e) {
     return json({ ok: false, error: "Could not load inventory: " + e.message }, 502, corsHeaders(origin));
+  }
+}
+
+function shareEscape(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; });
+}
+
+async function handleItemShare(request, env) {
+  const url = new URL(request.url);
+  const itemId = String(url.searchParams.get('id') || '').trim();
+  if (!itemId) return new Response('Missing item', { status:400 });
+  try {
+    const result = await fetchInventoryApi(env, '/public/storefront/item?store_id=' + encodeURIComponent(getStoreId(env)) + '&id=' + encodeURIComponent(itemId));
+    if (!result.ok || !result.data?.item) return new Response('Item unavailable', { status:404 });
+    const item = result.data.item;
+    const destination = 'https://themanapocket.com/shop?item=' + encodeURIComponent(item.id);
+    const description = (item.comic?.description || [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' · ') || 'Available from The Mana Pocket').slice(0, 280);
+    const title = shareEscape(item.name || 'The Mana Pocket item');
+    const image = shareEscape(item.image || '');
+    const html = '<!doctype html><html><head><meta charset="utf-8"><title>'+title+'</title><meta name="description" content="'+shareEscape(description)+'"><meta property="og:type" content="product"><meta property="og:title" content="'+title+'"><meta property="og:description" content="'+shareEscape(description)+'"><meta property="og:url" content="'+shareEscape(url.href)+'">'+(image?'<meta property="og:image" content="'+image+'">':'')+'<link rel="canonical" href="'+shareEscape(destination)+'"><meta http-equiv="refresh" content="0;url='+shareEscape(destination)+'"></head><body><p><a href="'+shareEscape(destination)+'">View '+title+' at The Mana Pocket</a></p><script>location.replace('+JSON.stringify(destination)+')<\/script></body></html>';
+    return new Response(html, { headers:{ 'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'public, max-age=300' } });
+  } catch (e) {
+    return new Response('Item unavailable', { status:502 });
   }
 }
 
@@ -1580,15 +1610,26 @@ function initProductBrowsing(){
 // here if a slug isn't catching everything it should.
 var CATEGORY_SLUG_MAP = {
   'sports-cards': ['sport', 'baseball', 'basketball', 'football', 'hockey'],
-  'tcg': ['pokemon', 'pok\\u00e9mon', 'mtg', 'magic'],
+  'pokemon': ['pokemon', 'pok\\u00e9mon'],
+  'mtg': ['mtg', 'magic'],
+  'one-piece': ['one piece'],
+  'yugioh': ['yugioh', 'yu-gi-oh', 'yu gi oh'],
+  'lorcana': ['lorcana'],
+  'tcg': ['pokemon', 'pok\\u00e9mon', 'mtg', 'magic', 'one piece', 'yugioh', 'yu-gi-oh', 'lorcana'],
   'comics': ['comic'],
-  'supplies': ['supply', 'supplies', 'toploader', 'sleeve', 'binder']
+  'collectibles': ['collectible', 'figure', 'toy', 'plush', 'apparel', 'statue'],
+  'supplies': ['supply', 'supplies', 'toploader', 'sleeve', 'binder', 'playmat']
 };
 var CATEGORY_SLUG_LABELS = {
-  'all': 'All categories',
+  'all': 'All departments',
   'sports-cards': 'Sports Cards',
-  'tcg': 'Pok\\u00e9mon & MTG',
+  'pokemon': 'Pok\\u00e9mon',
+  'mtg': 'Magic: The Gathering',
+  'one-piece': 'One Piece',
+  'yugioh': 'Yu-Gi-Oh!',
+  'lorcana': 'Disney Lorcana',
   'comics': 'Comics',
+  'collectibles': 'Collectibles',
   'supplies': 'Supplies'
 };
 
@@ -1628,21 +1669,50 @@ function buildLiveShopControls(items, onFilterChange){
     select.appendChild(opt);
   });
 
+  var type = document.createElement('select');
+  type.className = 'wo-store-type-field';
+  type.setAttribute('aria-label','Product type');
+  type.style.cssText = 'flex:1;min-width:160px;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);';
+  var subtypeSets = {
+    'sports-cards':[['all','All sports cards'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
+    pokemon:[['all','All Pok\\u00e9mon'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
+    mtg:[['all','All MTG'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
+    'one-piece':[['all','All One Piece'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
+    yugioh:[['all','All Yu-Gi-Oh!'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
+    lorcana:[['all','All Lorcana'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
+    comics:[['all','All comics'],['in-stock','Single issues'],['graphic-novels','Graphic novels & manga']],
+    collectibles:[['all','All collectibles'],['plush','Plush'],['figures','Figures & toys'],['apparel','Apparel']],
+    supplies:[['all','All supplies'],['sleeves','Sleeves'],['binders','Binders'],['toploaders','Top loaders'],['playmats','Playmats'],['other-supplies','Other supplies']]
+  };
+  function populateTypes(){
+    var options = subtypeSets[select.value] || [['all','All item types']];
+    type.innerHTML = options.map(function(option){ return '<option value="'+option[0]+'">'+option[1]+'</option>'; }).join('');
+    type.hidden = select.value === 'all';
+  }
+
   bar.appendChild(search);
   bar.appendChild(select);
+  bar.appendChild(type);
 
-  function fire(){ onFilterChange(select.value, search.value.trim().toLowerCase()); }
+  function fire(){ onFilterChange(select.value, type.value || 'all', search.value.trim().toLowerCase()); }
   search.addEventListener('input', fire);
-  select.addEventListener('change', fire);
+  select.addEventListener('change', function(){ populateTypes(); fire(); });
+  type.addEventListener('change', fire);
+  populateTypes();
 
-  return { el: bar, select: select, search: search, fire: fire };
+  return { el: bar, select: select, type: type, search: search, fire: fire };
 }
 
 function initShopUrlFilter(controls){
   var params = new URLSearchParams(window.location.search);
   var cat = params.get('cat');
-  if(!cat || !controls) return;
-  controls.select.value = cat;
+  if(!controls) return;
+  if(cat) controls.select.value = cat;
+  controls.select.dispatchEvent(new Event('change'));
+  var productType = params.get('type') || params.get('subcat');
+  if(productType && controls.type) controls.type.value = productType;
+  var query = params.get('q') || params.get('search');
+  if(query) controls.search.value = query;
   controls.fire();
 }
 
@@ -1700,6 +1770,7 @@ function openWoLiveItemDetail(item){
   overlay.addEventListener('click', function(e){ if(e.target === overlay) overlay.remove(); });
   var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
   var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
+  var shareUrl = API_BASE + '/share/item?id=' + encodeURIComponent(item.id);
   var card = document.createElement('div');
   card.style.cssText = 'width:100%;max-width:520px;background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
   card.innerHTML =
@@ -1711,7 +1782,9 @@ function openWoLiveItemDetail(item){
     (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
     '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
     (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#e5798a;font-weight:700;">Only '+stockQty+' left</div>' : '') +
-    '<button data-wo-add-to-cart style="margin-top:14px;width:100%;padding:12px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+    '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:14px;">' +
+    '<button data-wo-add-to-cart style="min-width:0;padding:12px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+    '<button data-wo-share-item type="button" style="padding:12px 16px;background:transparent;color:var(--wo-text,#1a1a1a);border:1px solid currentColor;border-radius:8px;font-weight:600;cursor:pointer;">Share</button></div>' +
     woComicDetailHtml(item.comic);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
@@ -1721,95 +1794,110 @@ function openWoLiveItemDetail(item){
     addToCart({ id:item.id, name:item.name, price:Number(item.price||0), image:item.image||'', available: stockQty || 1 }, e.currentTarget);
     overlay.remove();
   });
+  card.querySelector('[data-wo-share-item]').addEventListener('click', function(){
+    if(navigator.share){
+      navigator.share({ title:item.name, text:(item.comic&&item.comic.description)||metaLine||'Available from The Mana Pocket', url:shareUrl }).catch(function(){});
+      return;
+    }
+    window.open('https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(shareUrl), '_blank', 'noopener,noreferrer,width=640,height=520');
+  });
 }
 
-function renderLiveInventory(){
+// Server-paged storefront renderer. Only a small first batch is downloaded
+// and turned into DOM nodes; later batches arrive when the customer reaches
+// the sentinel. Filtering starts a fresh server query instead of constructing
+// hundreds of hidden cards and repeatedly laying all of them out.
+function renderLiveInventoryPaged(){
   var mount = document.getElementById('wo-live-shop');
   if(!mount) return;
-  mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--wo-text,#888);opacity:.7;">Loading inventory\\u2026</div>';
+  mount.setAttribute('data-wo-server-paged','true');
+  mount.innerHTML = '';
+  var grid = document.createElement('div');
+  grid.className = 'wo-live-grid';
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;align-items:stretch;min-height:110vh;';
+  var status = document.createElement('div');
+  status.setAttribute('aria-live','polite');
+  status.style.cssText = 'padding:18px;text-align:center;color:var(--wo-text,#888);opacity:.8;';
+  var sentinel = document.createElement('div');
+  sentinel.style.cssText = 'height:1px;grid-column:1/-1;';
+  var state = { offset:0, total:0, hasMore:true, loading:false, category:'all', type:'all', query:'', token:0 };
+  var timer = 0;
 
-  fetch(API_BASE + '/api/inventory')
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      var items = (d && d.items) || [];
-      if(!items.length){
-        mount.innerHTML = '<div style="padding:24px;text-align:center;color:var(--wo-text,#888);opacity:.7;">Nothing available right now \\u2014 check back soon.</div>';
-        return;
-      }
-      mount.innerHTML = '';
-
-      var cardEls = [];
-      var grid = document.createElement('div');
-      grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;';
-
-      function applyLiveFilters(catSlug, query){
-        cardEls.forEach(function(entry){
-          var matchesCat = categoryMatchesSlug(entry.item.category, catSlug);
-          var matchesQuery = !query || (entry.item.name||'').toLowerCase().indexOf(query) !== -1;
-          entry.el.style.display = (matchesCat && matchesQuery) ? '' : 'none';
-        });
-      }
-
-      var controls = buildLiveShopControls(items, applyLiveFilters);
-      mount.appendChild(controls.el);
-      mount.appendChild(grid);
-
-      items.forEach(function(item){
-        var card = document.createElement('div');
-        card.className = 'wo-live-card';
-        card.setAttribute('data-category', (item.category || '').toLowerCase());
-        card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;';
-        var imgHtml = item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">' : '<div style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
-        var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
-        var stockLine = stockQty > 0
-          ? ('<div style="font-size:11px;color:' + (stockQty <= 3 ? '#e5798a' : 'var(--wo-text,#888)') + ';opacity:' + (stockQty <= 3 ? '1' : '.7') + ';font-weight:' + (stockQty <= 3 ? '700' : '400') + ';">' + (stockQty <= 3 ? 'Only ' + stockQty + ' left' : stockQty + ' in stock') + '</div>')
-          : '';
-        // The public-storefront payload carries set/year/variant/condition
-        // as separate fields (not a pre-joined display string), so build
-        // the meta line here the same way the detail modal does.
-        var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
-        var signedBadge = item.isSigned ? '<div style="font-size:10px;font-weight:700;color:#92400e;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '';
-        card.innerHTML = imgHtml +
-          '<div style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
-          '<div style="font-size:14px;font-weight:600;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
-          (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;">'+escapeHtml(metaLine)+'</div>' : '') +
-          signedBadge +
-          stockLine +
-          '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
-          '<button data-wo-add-to-cart style="padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
-          '<div class="wo-cart-data" style="display:none;">' +
-          '<span class="wo-d-slug">'+escapeHtml(item.id)+'</span>' +
-          '<span class="wo-d-name">'+escapeHtml(item.name)+'</span>' +
-          '<span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span>' +
-          '<img class="wo-d-image" src="'+escapeHtml(item.image||'')+'">' +
-          '<span class="wo-d-category">'+escapeHtml(item.category||'')+'</span>' +
-          '<span class="wo-d-qty">'+(stockQty || 1)+'</span>' +
-          '</div></div>';
-        card.addEventListener('click', function(e){
-          if(e.target.closest('[data-wo-add-to-cart]')) return;
-          openWoLiveItemDetail(item);
-        });
-        grid.appendChild(card);
-        cardEls.push({ el: card, item: item });
-      });
-
-      // Wire up the freshly-created Add to Cart buttons
-      Array.prototype.forEach.call(mount.querySelectorAll('[data-wo-add-to-cart]'), function(btn){
-        btn.addEventListener('click', function(e){
-          e.preventDefault();
-          var product = readProductFromCarrier(findDataCarrier(btn));
-          if(!product || !product.id) return;
-          addToCart(product, btn);
-        });
-      });
-
-      // Apply ?cat= from the URL (e.g. the Shop nav dropdown links) once
-      // the cards actually exist to filter.
-      initShopUrlFilter(controls);
-    })
-    .catch(function(){
-      mount.innerHTML = '<div style="padding:24px;text-align:center;color:#e5798a;">Could not load inventory right now.</div>';
+  function itemCard(item){
+    var card = document.createElement('article');
+    card.className = 'wo-live-card';
+    card.setAttribute('data-category', item.categorySlug || (item.category || '').toLowerCase());
+    card.setAttribute('data-product-type', item.productTypeSlug || '');
+    card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;content-visibility:auto;contain-intrinsic-size:420px;';
+    var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
+    var metaLine = [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' \u00b7 ');
+    var image = item.image
+      ? '<img loading="lazy" decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
+      : '<div aria-hidden="true" style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
+    card.innerHTML = image +
+      '<div class="wo-live-card-body" style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
+      '<div style="font-size:14px;font-weight:600;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
+      (metaLine?'<div style="font-size:12px;color:var(--wo-text,#888);opacity:.75;">'+escapeHtml(metaLine)+'</div>':'') +
+      (item.productType?'<div style="font-size:10px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(item.productType)+'</div>':'') +
+      (item.isSigned?'<div style="font-size:10px;font-weight:700;color:#92400e;">\u270D Signed'+(item.signedBy?' by '+escapeHtml(item.signedBy):'')+'</div>':'') +
+      (stockQty>0?'<div style="font-size:11px;color:'+(stockQty<=3?'#e5798a':'var(--wo-text,#888)')+';font-weight:'+(stockQty<=3?'700':'400')+';">'+(stockQty<=3?'Only '+stockQty+' left':stockQty+' in stock')+'</div>':'') +
+      '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
+      '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+      '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';
+    card.addEventListener('click',function(event){ if(!event.target.closest('[data-wo-add-to-cart]')) openWoLiveItemDetail(item); });
+    card.querySelector('[data-wo-add-to-cart]').addEventListener('click',function(event){
+      event.preventDefault();
+      event.stopPropagation();
+      addToCart({id:item.id,name:item.name,price:Number(item.price||0),image:item.image||'',available:stockQty||1},event.currentTarget);
     });
+    return card;
+  }
+
+  function load(reset){
+    if(state.loading || (!reset && !state.hasMore)) return;
+    if(reset){ state.offset=0;state.hasMore=true;grid.innerHTML='';state.token++; }
+    var token = state.token;
+    state.loading = true;
+    status.textContent = state.offset ? 'Loading more\u2026' : 'Loading inventory\u2026';
+    var params = new URLSearchParams({limit:'36',offset:String(state.offset)});
+    if(state.category && state.category!=='all') params.set('category',state.category);
+    if(state.type && state.type!=='all') params.set('type',state.type);
+    if(state.query) params.set('q',state.query);
+    fetch(API_BASE+'/api/inventory?'+params.toString())
+      .then(function(response){ if(!response.ok) throw new Error('Inventory unavailable'); return response.json(); })
+      .then(function(data){
+        if(token!==state.token) return;
+        var items=(data&&data.items)||[];
+        items.forEach(function(item){ grid.appendChild(itemCard(item)); });
+        state.total=Number(data.total)||items.length;
+        state.offset=(Number(data.offset)||0)+items.length;
+        state.hasMore=data.hasMore===true;
+        if(state.offset || !state.total) grid.style.minHeight='0';
+        status.textContent=state.total ? 'Showing '+state.offset+' of '+state.total : 'Nothing available in this section right now.';
+        if(state.hasMore) grid.appendChild(sentinel);
+      })
+      .catch(function(){ if(token===state.token) status.textContent='Could not load inventory right now.'; })
+      .finally(function(){ if(token===state.token) state.loading=false; });
+  }
+
+  var controls=buildLiveShopControls([],function(category,type,query){
+    clearTimeout(timer);
+    timer=setTimeout(function(){state.category=category||'all';state.type=type||'all';state.query=query||'';load(true);},220);
+  });
+  mount.appendChild(controls.el);
+  mount.appendChild(grid);
+  mount.appendChild(status);
+  var observer=new IntersectionObserver(function(entries){if(entries.some(function(entry){return entry.isIntersecting;}))load(false);},{rootMargin:'600px 0px'});
+  observer.observe(sentinel);
+  initShopUrlFilter(controls);
+
+  var deepLink=new URLSearchParams(location.search).get('item');
+  if(deepLink){
+    fetch(ACCOUNT_API_BASE+'/public/storefront/item?store_id='+encodeURIComponent(WO_STORE_ID)+'&id='+encodeURIComponent(deepLink))
+      .then(function(response){return response.json();})
+      .then(function(data){if(data&&data.item)openWoLiveItemDetail(data.item);})
+      .catch(function(){});
+  }
 }
 
 function joinFanClub(tier, amount, email, btn){
@@ -1913,7 +2001,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
   initProductBrowsing();
   initTeamTheme();
-  renderLiveInventory();
+  renderLiveInventoryPaged();
 
   var allCards = [];
   Array.prototype.forEach.call(document.querySelectorAll('.wo-cart-data'), function(dataEl){
@@ -2118,6 +2206,7 @@ export default {
       if (path === "/api/admin/cancel" && request.method === "POST") return await handleAdminCancel(request, env, origin);
       if (path === "/api/admin/refund" && request.method === "POST") return await handleAdminRefund(request, env, origin);
       if (path === "/api/inventory" && request.method === "GET") return await handleInventoryList(request, env, origin);
+      if (path === "/share/item" && request.method === "GET") return await handleItemShare(request, env);
       if (path === "/api/rundrop-stock" && request.method === "GET") return await handleRunDropStock(request, env, origin);
       if (path === "/api/debug-supabase" && request.method === "GET") return await handleDebugSupabase(request, env, origin);
       if (path === "/api/membership/subscribe" && request.method === "POST") return await handleMembershipSubscribe(request, env, origin);
