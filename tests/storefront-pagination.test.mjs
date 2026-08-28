@@ -49,6 +49,7 @@ assert.match(script, /data-wo-loaded/);
 assert.match(script, /prioritizeImage\?'eager':'lazy'/);
 assert.match(script, /prioritizeImage\?' fetchpriority="high"'/);
 assert.match(script, /state\.offset===0&&index===0/);
+assert.match(script, /window\.__MP_STOREFRONT_PREFETCH__/,'the renderer must reuse the earlier site-bundle first-page request');
 assert.match(script, /data-wo-share-item/);
 assert.match(script, /\/share\/item\?id=/);
 assert.match(script, /Disney Lorcana/);

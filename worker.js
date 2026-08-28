@@ -1864,7 +1864,10 @@ function renderLiveInventoryPaged(){
     if(state.category && state.category!=='all') params.set('category',state.category);
     if(state.type && state.type!=='all') params.set('type',state.type);
     if(state.query) params.set('q',state.query);
-    fetch(API_BASE+'/api/inventory?'+params.toString())
+    var requestKey=params.toString(),prefetch=state.offset===0&&window.__MP_STOREFRONT_PREFETCH__&&window.__MP_STOREFRONT_PREFETCH__.key===requestKey?window.__MP_STOREFRONT_PREFETCH__:null;
+    var inventoryRequest=prefetch?prefetch.promise:fetch(API_BASE+'/api/inventory?'+requestKey);
+    if(prefetch)window.__MP_STOREFRONT_PREFETCH__=null;
+    inventoryRequest
       .then(function(response){ if(!response.ok) throw new Error('Inventory unavailable'); return response.json(); })
       .then(function(data){
         if(token!==state.token) return;
