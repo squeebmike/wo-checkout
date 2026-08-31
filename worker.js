@@ -1649,9 +1649,18 @@ function categoryMatchesSlug(itemCategory, slug){
 // classes already styled in Webflow (themed to --wo-surface/secondary/text),
 // so this picks up the site's look with zero extra CSS of its own.
 function buildLiveShopControls(items, onFilterChange){
+  if(!document.getElementById('wo-store-controls-mobile-style')){
+    var style=document.createElement('style');style.id='wo-store-controls-mobile-style';
+    style.textContent='.wo-store-controls-toggle{display:none}.wo-store-controls-fields{display:contents}@media(max-width:767px){.wo-store-controls{display:block!important;padding:8px!important;transition:box-shadow .2s ease}.wo-store-controls-toggle{display:flex;width:100%;min-height:48px;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--wo-text,#222);font:700 15px system-ui,sans-serif;text-align:left;cursor:pointer}.wo-store-controls-summary{overflow:hidden;color:var(--wo-text,#666);font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.wo-store-controls-chevron{flex:none;transition:transform .22s ease}.wo-store-controls-fields{display:grid;grid-template-columns:1fr;gap:10px;max-height:360px;margin-top:8px;opacity:1;overflow:hidden;transform:translateY(0);transition:max-height .24s ease,margin .24s ease,opacity .18s ease,transform .24s ease}.wo-store-controls-fields>*{box-sizing:border-box;width:100%;min-width:0!important;max-width:none!important}.wo-store-controls.is-collapsed .wo-store-controls-fields{max-height:0;margin-top:0;opacity:0;pointer-events:none;transform:translateY(-8px)}.wo-store-controls.is-collapsed .wo-store-controls-chevron{transform:rotate(180deg)}}@media(prefers-reduced-motion:reduce){.wo-store-controls,.wo-store-controls-fields,.wo-store-controls-chevron{transition:none!important}}';
+    document.head.appendChild(style);
+  }
   var bar=document.createElement('div');
   bar.className='wo-store-controls';
   bar.style.cssText='display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:20px;padding:14px;border-radius:12px;';
+  var toggle=document.createElement('button');toggle.type='button';toggle.className='wo-store-controls-toggle';
+  toggle.setAttribute('aria-expanded','true');toggle.setAttribute('aria-controls','wo-store-controls-fields');
+  toggle.innerHTML='<span>Search &amp; filters</span><span class="wo-store-controls-summary">All items</span><span class="wo-store-controls-chevron" aria-hidden="true">&#9652;</span>';
+  var fields=document.createElement('div');fields.id='wo-store-controls-fields';fields.className='wo-store-controls-fields';
   var search=document.createElement('input');
   search.type='search';search.placeholder='Search name, player, set, number...';
   search.setAttribute('aria-label','Search inventory');
@@ -1686,8 +1695,27 @@ function buildLiveShopControls(items, onFilterChange){
   populate(select,[],'All categories');populate(type,[],'All product types');
   populate(sort,[{value:'price-asc',label:'Price: low to high'},{value:'price-desc',label:'Price: high to low'},{value:'name',label:'Name: A to Z'}],'Recently updated');
   var clear=document.createElement('button');clear.type='button';clear.textContent='Clear filters';clear.style.cssText='min-height:44px;padding:10px 14px;border:1px solid currentColor;border-radius:8px;cursor:pointer;font:600 14px system-ui,sans-serif;background:var(--wo-surface,#fff);color:var(--wo-text,#222);';
-  [search,select,type,sort,clear].forEach(function(el){bar.appendChild(el);});
-  function fire(){onFilterChange(select.value,type.value||'all',search.value.trim(),sort.value);}
+  [search,select,type,sort,clear].forEach(function(el){fields.appendChild(el);});
+  bar.appendChild(toggle);bar.appendChild(fields);
+  function updateSummary(){
+    var parts=[];
+    if(select.value&&select.value!=='all')parts.push(select.options[select.selectedIndex]?select.options[select.selectedIndex].textContent:select.value);
+    if(type.value&&type.value!=='all')parts.push(type.options[type.selectedIndex]?type.options[type.selectedIndex].textContent:type.value);
+    if(search.value.trim())parts.push('\u201c'+search.value.trim()+'\u201d');
+    var summary=toggle.querySelector('.wo-store-controls-summary');if(summary)summary.textContent=parts.join(' \u00b7 ')||'All items';
+  }
+  function setCollapsed(collapsed){bar.classList.toggle('is-collapsed',collapsed);toggle.setAttribute('aria-expanded',collapsed?'false':'true');}
+  toggle.addEventListener('click',function(){setCollapsed(!bar.classList.contains('is-collapsed'));});
+  fields.addEventListener('focusin',function(){setCollapsed(false);});
+  var lastScrollY=window.scrollY;
+  window.addEventListener('scroll',function(){
+    if(!window.matchMedia('(max-width: 767px)').matches)return;
+    var y=window.scrollY,delta=y-lastScrollY;lastScrollY=y;
+    if(Math.abs(delta)<10||fields.contains(document.activeElement))return;
+    if(delta>0&&y>120)setCollapsed(true);
+    else if(delta<0)setCollapsed(false);
+  },{passive:true});
+  function fire(){updateSummary();onFilterChange(select.value,type.value||'all',search.value.trim(),sort.value);}
   search.addEventListener('input',fire);
   select.addEventListener('change',function(){populate(type,productTypeOptions([],select.value),'All product types');fire();});
   type.addEventListener('change',fire);sort.addEventListener('change',fire);
@@ -1696,6 +1724,7 @@ function buildLiveShopControls(items, onFilterChange){
     if(!options)return;
     populate(select,options.categories,'All categories',select.value);
     populate(type,productTypeOptions(options.types,select.value),'All product types',type.value);
+    updateSummary();
   }
   return {el:bar,select:select,type:type,search:search,sort:sort,fire:fire,update:update,populate:populate,productTypeOptions:productTypeOptions};
 }

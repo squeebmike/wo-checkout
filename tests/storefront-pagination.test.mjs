@@ -57,5 +57,11 @@ assert.match(script, /Yu-Gi-Oh!/);
 assert.match(script, /value:'preorders',label:'Comic preorders'/,'Comic inventory must expose a dedicated preorder product-type filter');
 assert.match(script, /productTypeOptions\(options\.types,select\.value\)/,'database filter refreshes must preserve the preorder choice');
 assert.match(script, /controls\.productTypeOptions\(\[\],cat\)/,'a comic preorder URL must restore its product-type filter on first load');
+assert.match(script, /wo-store-controls-toggle/,'mobile controls must expose a compact filter toggle');
+assert.match(script, /aria-expanded/,'the compact filter toggle must announce its state');
+assert.match(script, /wo-store-controls\.is-collapsed \.wo-store-controls-fields/,'mobile filter fields must fade and collapse without removing their values');
+assert.match(script, /if\(delta>0&&y>120\)setCollapsed\(true\)/,'scrolling down on mobile must collapse the full filter panel');
+assert.match(script, /else if\(delta<0\)setCollapsed\(false\)/,'scrolling up on mobile must restore the full filter panel');
+assert.match(script, /fields\.contains\(document\.activeElement\)/,'focused filter fields must never auto-collapse');
 
 console.log('Paged storefront, canonical filters, lazy images, and sharing contracts passed.');
