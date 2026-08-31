@@ -1664,6 +1664,14 @@ function buildLiveShopControls(items, onFilterChange){
   var select=makeSelect('Category','wo-store-control-field');
   var type=makeSelect('Product type','wo-store-type-field');
   var sort=makeSelect('Sort results','wo-store-sort-field');
+  function productTypeOptions(options,category){
+    var result=(options||[]).slice();
+    var normalized=String(category||'').trim().toLowerCase();
+    if((normalized==='comic'||normalized==='comics')&&!result.some(function(entry){return entry.value==='preorders';})){
+      result.push({value:'preorders',label:'Comic preorders'});
+    }
+    return result;
+  }
   function populate(el,options,allLabel,current){
     el.replaceChildren();
     [{value:'all',label:allLabel}].concat(options||[]).forEach(function(entry){
@@ -1681,22 +1689,22 @@ function buildLiveShopControls(items, onFilterChange){
   [search,select,type,sort,clear].forEach(function(el){bar.appendChild(el);});
   function fire(){onFilterChange(select.value,type.value||'all',search.value.trim(),sort.value);}
   search.addEventListener('input',fire);
-  select.addEventListener('change',function(){populate(type,[],'All product types');fire();});
+  select.addEventListener('change',function(){populate(type,productTypeOptions([],select.value),'All product types');fire();});
   type.addEventListener('change',fire);sort.addEventListener('change',fire);
   clear.addEventListener('click',function(){select.value='all';populate(type,[],'All product types');search.value='';sort.value='all';search.dispatchEvent(new Event('input',{bubbles:true}));});
   function update(options){
     if(!options)return;
     populate(select,options.categories,'All categories',select.value);
-    populate(type,options.types,'All product types',type.value);
+    populate(type,productTypeOptions(options.types,select.value),'All product types',type.value);
   }
-  return {el:bar,select:select,type:type,search:search,sort:sort,fire:fire,update:update,populate:populate};
+  return {el:bar,select:select,type:type,search:search,sort:sort,fire:fire,update:update,populate:populate,productTypeOptions:productTypeOptions};
 }
 
 function initShopUrlFilter(controls){
   var params=new URLSearchParams(window.location.search);
   var cat=params.get('cat')||params.get('category')||'all';
   controls.populate(controls.select,[],'All categories',cat);
-  controls.populate(controls.type,[],'All product types',params.get('type')||params.get('subcat')||'all');
+  controls.populate(controls.type,controls.productTypeOptions([],cat),'All product types',params.get('type')||params.get('subcat')||'all');
   controls.search.value=params.get('q')||params.get('search')||'';
   controls.sort.value=params.get('sort')||'all';
   controls.fire();

@@ -54,5 +54,8 @@ assert.match(script, /data-wo-share-item/);
 assert.match(script, /\/share\/item\?id=/);
 assert.match(script, /Disney Lorcana/);
 assert.match(script, /Yu-Gi-Oh!/);
+assert.match(script, /value:'preorders',label:'Comic preorders'/,'Comic inventory must expose a dedicated preorder product-type filter');
+assert.match(script, /productTypeOptions\(options\.types,select\.value\)/,'database filter refreshes must preserve the preorder choice');
+assert.match(script, /controls\.productTypeOptions\(\[\],cat\)/,'a comic preorder URL must restore its product-type filter on first load');
 
 console.log('Paged storefront, canonical filters, lazy images, and sharing contracts passed.');
