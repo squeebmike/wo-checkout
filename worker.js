@@ -819,12 +819,12 @@ async function handleInventoryList(request, env, origin) {
   const storeId = getStoreId(env);
   const incoming = new URL(request.url);
   const forwarded = new URLSearchParams();
-  ['limit','offset','category','type','q'].forEach(function(key){
+  ['limit','offset','category','type','q','sort'].forEach(function(key){
     const value = incoming.searchParams.get(key);
     if (value) forwarded.set(key, value.slice(0, 160));
   });
   const queryString = forwarded.toString();
-  const cacheKey = "inventory:" + storeId + (queryString ? ':' + queryString : '');
+  const cacheKey = "inventory:database-facets-1:" + storeId + (queryString ? ':' + queryString : '');
 
   try {
     const cached = await env.WO_RESERVATIONS.get(cacheKey);
@@ -845,7 +845,7 @@ async function handleInventoryList(request, env, origin) {
     }
     var items = result.data.items || [];
 
-    var payload = JSON.stringify({ ok: true, items: items, total:result.data.total == null ? items.length : result.data.total, offset:result.data.offset || 0, limit:result.data.limit || items.length, hasMore:result.data.hasMore === true, nextOffset:result.data.nextOffset, facets:result.data.facets || [] });
+    var payload = JSON.stringify({ ok: true, items: items, total:result.data.total == null ? items.length : result.data.total, offset:result.data.offset || 0, limit:result.data.limit || items.length, hasMore:result.data.hasMore === true, nextOffset:result.data.nextOffset, facets:result.data.facets || [], filterOptions:result.data.filterOptions || null });
     try { await env.WO_RESERVATIONS.put(cacheKey, payload, { expirationTtl: INVENTORY_CACHE_TTL_SECONDS }); } catch (e) {}
     return new Response(payload, { headers: Object.assign({ "Content-Type": "application/json" }, corsHeaders(origin)) });
   } catch (e) {
@@ -866,10 +866,13 @@ async function handleItemShare(request, env) {
     if (!result.ok || !result.data?.item) return new Response('Item unavailable', { status:404 });
     const item = result.data.item;
     const destination = 'https://themanapocket.com/shop?item=' + encodeURIComponent(item.id);
-    const description = (item.comic?.description || [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' · ') || 'Available from The Mana Pocket').slice(0, 280);
+    const description = ['$'+Number(item.price || 0).toFixed(2), item.comic?.description || [item.category,item.set,item.year,item.variant,item.condition].filter(Boolean).join(' · '), 'Available from The Mana Pocket'].filter(Boolean).join(' · ').slice(0, 280);
     const title = shareEscape(item.name || 'The Mana Pocket item');
-    const image = shareEscape(item.image || '');
-    const html = '<!doctype html><html><head><meta charset="utf-8"><title>'+title+'</title><meta name="description" content="'+shareEscape(description)+'"><meta property="og:type" content="product"><meta property="og:title" content="'+title+'"><meta property="og:description" content="'+shareEscape(description)+'"><meta property="og:url" content="'+shareEscape(url.href)+'">'+(image?'<meta property="og:image" content="'+image+'">':'')+'<link rel="canonical" href="'+shareEscape(destination)+'"><meta http-equiv="refresh" content="0;url='+shareEscape(destination)+'"></head><body><p><a href="'+shareEscape(destination)+'">View '+title+' at The Mana Pocket</a></p><script>location.replace('+JSON.stringify(destination)+')<\/script></body></html>';
+    const image = shareEscape([item.image,...(item.photos || [])].find(value => /^https?:\/\//i.test(value || '')) || '');
+    // Keep crawlers on the item-specific canonical page. A meta refresh or
+    // canonical pointing at /shop can replace the product preview with its logo.
+    const canonical = url.origin + '/share/item?id=' + encodeURIComponent(item.id);
+    const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+title+'</title><meta name="description" content="'+shareEscape(description)+'"><meta property="og:type" content="product"><meta property="og:site_name" content="The Mana Pocket"><meta property="og:title" content="'+title+'"><meta property="og:description" content="'+shareEscape(description)+'"><meta property="og:url" content="'+shareEscape(canonical)+'"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="'+title+'"><meta name="twitter:description" content="'+shareEscape(description)+'">'+(image?'<meta property="og:image" content="'+image+'"><meta property="og:image:alt" content="'+title+'"><meta name="twitter:image" content="'+image+'">':'')+'<meta property="product:price:amount" content="'+Number(item.price||0).toFixed(2)+'"><meta property="product:price:currency" content="USD"><link rel="canonical" href="'+shareEscape(canonical)+'"></head><body><h1>'+title+'</h1>'+(image?'<img src="'+image+'" alt="'+title+'" style="max-width:440px;width:100%">':'')+'<p>'+shareEscape(description)+'</p><p><a href="'+shareEscape(destination)+'">View '+title+' at The Mana Pocket</a></p><script>location.replace('+JSON.stringify(destination)+')<\/script></body></html>';
     return new Response(html, { headers:{ 'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'public, max-age=300' } });
   } catch (e) {
     return new Response('Item unavailable', { status:502 });
@@ -1646,73 +1649,56 @@ function categoryMatchesSlug(itemCategory, slug){
 // classes already styled in Webflow (themed to --wo-surface/secondary/text),
 // so this picks up the site's look with zero extra CSS of its own.
 function buildLiveShopControls(items, onFilterChange){
-  var bar = document.createElement('div');
-  bar.className = 'wo-store-controls';
-  bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:20px;padding:14px;border-radius:12px;';
-
-  var search = document.createElement('input');
-  search.type = 'text';
-  search.placeholder = 'Search inventory...';
-  search.className = 'wo-store-search-field';
-  search.style.cssText = 'flex:2;min-width:180px;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);';
-
-  var select = document.createElement('select');
-  select.className = 'wo-store-control-field';
-  select.style.cssText = 'flex:1;min-width:160px;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);';
-  var seen = {};
-  ['all'].concat(Object.keys(CATEGORY_SLUG_LABELS).filter(function(k){ return k !== 'all'; })).forEach(function(slug){
-    if(seen[slug]) return;
-    seen[slug] = true;
-    var opt = document.createElement('option');
-    opt.value = slug;
-    opt.textContent = CATEGORY_SLUG_LABELS[slug] || slug;
-    select.appendChild(opt);
-  });
-
-  var type = document.createElement('select');
-  type.className = 'wo-store-type-field';
-  type.setAttribute('aria-label','Product type');
-  type.style.cssText = 'flex:1;min-width:160px;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.15);';
-  var subtypeSets = {
-    'sports-cards':[['all','All sports cards'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
-    pokemon:[['all','All Pok\\u00e9mon'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
-    mtg:[['all','All MTG'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
-    'one-piece':[['all','All One Piece'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
-    yugioh:[['all','All Yu-Gi-Oh!'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
-    lorcana:[['all','All Lorcana'],['singles','Singles'],['sealed','Sealed product'],['graded','Graded cards']],
-    comics:[['all','All comics'],['in-stock','Single issues'],['graphic-novels','Graphic novels & manga']],
-    collectibles:[['all','All collectibles'],['plush','Plush'],['figures','Figures & toys'],['apparel','Apparel']],
-    supplies:[['all','All supplies'],['sleeves','Sleeves'],['binders','Binders'],['toploaders','Top loaders'],['playmats','Playmats'],['other-supplies','Other supplies']]
-  };
-  function populateTypes(){
-    var options = subtypeSets[select.value] || [['all','All item types']];
-    type.innerHTML = options.map(function(option){ return '<option value="'+option[0]+'">'+option[1]+'</option>'; }).join('');
-    type.hidden = select.value === 'all';
+  var bar=document.createElement('div');
+  bar.className='wo-store-controls';
+  bar.style.cssText='display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:20px;padding:14px;border-radius:12px;';
+  var search=document.createElement('input');
+  search.type='search';search.placeholder='Search name, player, set, number...';
+  search.setAttribute('aria-label','Search inventory');
+  search.className='wo-store-search-field';
+  search.style.cssText='flex:2;min-width:180px;padding:10px 12px;border-radius:8px;font:16px system-ui,sans-serif;';
+  function makeSelect(label,cls){
+    var el=document.createElement('select');el.className=cls;el.setAttribute('aria-label',label);
+    el.style.cssText='flex:1;min-width:180px;max-width:100%;padding:10px 12px;border-radius:8px;font:16px system-ui,sans-serif;';return el;
   }
-
-  bar.appendChild(search);
-  bar.appendChild(select);
-  bar.appendChild(type);
-
-  function fire(){ onFilterChange(select.value, type.value || 'all', search.value.trim().toLowerCase()); }
-  search.addEventListener('input', fire);
-  select.addEventListener('change', function(){ populateTypes(); fire(); });
-  type.addEventListener('change', fire);
-  populateTypes();
-
-  return { el: bar, select: select, type: type, search: search, fire: fire };
+  var select=makeSelect('Category','wo-store-control-field');
+  var type=makeSelect('Product type','wo-store-type-field');
+  var sort=makeSelect('Sort results','wo-store-sort-field');
+  function populate(el,options,allLabel,current){
+    el.replaceChildren();
+    [{value:'all',label:allLabel}].concat(options||[]).forEach(function(entry){
+      var option=document.createElement('option');option.value=entry.value;
+      option.textContent=entry.label+(entry.count==null?'':' ('+entry.count+')');el.appendChild(option);
+    });
+    if(current && current!=='all' && !Array.from(el.options).some(function(o){return o.value===current;})){
+      var option=document.createElement('option');option.value=current;option.textContent=CATEGORY_SLUG_LABELS[current]||current;el.appendChild(option);
+    }
+    el.value=current||'all';
+  }
+  populate(select,[],'All categories');populate(type,[],'All product types');
+  populate(sort,[{value:'price-asc',label:'Price: low to high'},{value:'price-desc',label:'Price: high to low'},{value:'name',label:'Name: A to Z'}],'Recently updated');
+  var clear=document.createElement('button');clear.type='button';clear.textContent='Clear filters';clear.style.cssText='min-height:44px;padding:10px 14px;border:1px solid currentColor;border-radius:8px;cursor:pointer;font:600 14px system-ui,sans-serif;background:var(--wo-surface,#fff);color:var(--wo-text,#222);';
+  [search,select,type,sort,clear].forEach(function(el){bar.appendChild(el);});
+  function fire(){onFilterChange(select.value,type.value||'all',search.value.trim(),sort.value);}
+  search.addEventListener('input',fire);
+  select.addEventListener('change',function(){populate(type,[],'All product types');fire();});
+  type.addEventListener('change',fire);sort.addEventListener('change',fire);
+  clear.addEventListener('click',function(){select.value='all';populate(type,[],'All product types');search.value='';sort.value='all';search.dispatchEvent(new Event('input',{bubbles:true}));});
+  function update(options){
+    if(!options)return;
+    populate(select,options.categories,'All categories',select.value);
+    populate(type,options.types,'All product types',type.value);
+  }
+  return {el:bar,select:select,type:type,search:search,sort:sort,fire:fire,update:update,populate:populate};
 }
 
 function initShopUrlFilter(controls){
-  var params = new URLSearchParams(window.location.search);
-  var cat = params.get('cat');
-  if(!controls) return;
-  if(cat) controls.select.value = cat;
-  controls.select.dispatchEvent(new Event('change'));
-  var productType = params.get('type') || params.get('subcat');
-  if(productType && controls.type) controls.type.value = productType;
-  var query = params.get('q') || params.get('search');
-  if(query) controls.search.value = query;
+  var params=new URLSearchParams(window.location.search);
+  var cat=params.get('cat')||params.get('category')||'all';
+  controls.populate(controls.select,[],'All categories',cat);
+  controls.populate(controls.type,[],'All product types',params.get('type')||params.get('subcat')||'all');
+  controls.search.value=params.get('q')||params.get('search')||'';
+  controls.sort.value=params.get('sort')||'all';
   controls.fire();
 }
 
@@ -1821,7 +1807,7 @@ function renderLiveInventoryPaged(){
   var sentinel = document.createElement('div');
   sentinel.style.cssText = 'height:1px;grid-column:1/-1;';
   var pageSize = window.matchMedia && window.matchMedia('(max-width: 767px)').matches ? 12 : 36;
-  var state = { offset:0, total:0, hasMore:true, loading:false, category:'all', type:'all', query:'', token:0 };
+  var state = { offset:0, total:0, hasMore:true, loading:false, category:'all', type:'all', query:'', sort:'all', token:0 };
   var timer = 0;
 
   function itemCard(item, prioritizeImage){
@@ -1855,7 +1841,7 @@ function renderLiveInventoryPaged(){
   }
 
   function load(reset){
-    if(state.loading || (!reset && !state.hasMore)) return;
+    if(!reset && (state.loading || !state.hasMore)) return;
     if(reset){ state.offset=0;state.hasMore=true;grid.innerHTML='';mount.removeAttribute('data-wo-loaded');state.token++; }
     var token = state.token;
     state.loading = true;
@@ -1864,6 +1850,7 @@ function renderLiveInventoryPaged(){
     if(state.category && state.category!=='all') params.set('category',state.category);
     if(state.type && state.type!=='all') params.set('type',state.type);
     if(state.query) params.set('q',state.query);
+    if(state.sort && state.sort!=='all') params.set('sort',state.sort);
     var requestKey=params.toString(),prefetch=state.offset===0&&window.__MP_STOREFRONT_PREFETCH__&&window.__MP_STOREFRONT_PREFETCH__.key===requestKey?window.__MP_STOREFRONT_PREFETCH__:null;
     var inventoryRequest=prefetch?prefetch.promise:fetch(API_BASE+'/api/inventory?'+requestKey);
     if(prefetch)window.__MP_STOREFRONT_PREFETCH__=null;
@@ -1871,9 +1858,10 @@ function renderLiveInventoryPaged(){
       .then(function(response){ if(!response.ok) throw new Error('Inventory unavailable'); return response.json(); })
       .then(function(data){
         if(token!==state.token) return;
+        controls.update(data.filterOptions);
         var items=(data&&data.items)||[];
         items.forEach(function(item,index){ grid.appendChild(itemCard(item,state.offset===0&&index===0)); });
-        state.total=Number(data.total)||items.length;
+        state.total=data.total==null?items.length:Number(data.total);
         state.offset=(Number(data.offset)||0)+items.length;
         state.hasMore=data.hasMore===true;
         if(state.offset || !state.total) grid.style.minHeight='0';
@@ -1885,9 +1873,19 @@ function renderLiveInventoryPaged(){
       .finally(function(){ if(token===state.token) state.loading=false; });
   }
 
-  var controls=buildLiveShopControls([],function(category,type,query){
+  var controls=buildLiveShopControls([],function(category,type,query,sort){
     clearTimeout(timer);
-    timer=setTimeout(function(){state.category=category||'all';state.type=type||'all';state.query=query||'';load(true);},220);
+    state.token++;state.loading=true;
+    timer=setTimeout(function(){
+      state.category=category||'all';state.type=type||'all';state.query=query||'';state.sort=sort||'all';
+      var url=new URL(location.href);
+      ['cat','category','type','subcat','q','search','sort'].forEach(function(key){url.searchParams.delete(key);});
+      if(state.category!=='all')url.searchParams.set('cat',state.category);
+      if(state.type!=='all')url.searchParams.set('type',state.type);
+      if(state.query)url.searchParams.set('q',state.query);
+      if(state.sort!=='all')url.searchParams.set('sort',state.sort);
+      history.replaceState(null,'',url);load(true);
+    },220);
   });
   mount.appendChild(controls.el);
   mount.appendChild(grid);
