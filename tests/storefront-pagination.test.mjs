@@ -60,8 +60,10 @@ assert.match(script, /controls\.productTypeOptions\(\[\],cat\)/,'a comic preorde
 assert.match(script, /wo-store-controls-toggle/,'mobile controls must expose a compact filter toggle');
 assert.match(script, /aria-expanded/,'the compact filter toggle must announce its state');
 assert.match(script, /wo-store-controls\.is-collapsed \.wo-store-controls-fields/,'mobile filter fields must fade and collapse without removing their values');
-assert.match(script, /if\(delta>0&&y>120\)setCollapsed\(true\)/,'scrolling down on mobile must collapse the full filter panel');
-assert.match(script, /else if\(delta<0\)setCollapsed\(false\)/,'scrolling up on mobile must restore the full filter panel');
+assert.match(script, /scrollTravel>=48\)setCollapsed\(true,true\)/,'a deliberate downward scroll must collapse the full mobile filter panel');
+assert.match(script, /scrollTravel>=96\)setCollapsed\(false,true\)/,'only a deliberate upward scroll must restore the full filter panel');
+assert.match(script, /scrollTransitionLocked/,'a filter transition must ignore layout-generated reverse scroll events');
+assert.match(script, /overflow-anchor:none/,'the changing filter height must not trigger browser scroll anchoring');
 assert.match(script, /fields\.contains\(document\.activeElement\)/,'focused filter fields must never auto-collapse');
 
 console.log('Paged storefront, canonical filters, lazy images, and sharing contracts passed.');
