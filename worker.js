@@ -1704,7 +1704,7 @@ function buildLiveShopControls(items, onFilterChange){
     if(search.value.trim())parts.push('\u201c'+search.value.trim()+'\u201d');
     var summary=toggle.querySelector('.wo-store-controls-summary');if(summary)summary.textContent=parts.join(' \u00b7 ')||'All items';
   }
-  var scrollTransitionLocked=false,scrollTravel=0,scrollDirection=0;
+  var scrollTransitionLocked=false,scrollTravel=0,scrollDirection=0,autoCollapseArmed=true;
   function setCollapsed(collapsed,lockScroll){
     if(bar.classList.contains('is-collapsed')===collapsed)return;
     bar.classList.toggle('is-collapsed',collapsed);toggle.setAttribute('aria-expanded',collapsed?'false':'true');
@@ -1713,13 +1713,19 @@ function buildLiveShopControls(items, onFilterChange){
       window.setTimeout(function(){lastScrollY=window.scrollY;scrollTravel=0;scrollDirection=0;scrollTransitionLocked=false;},900);
     }
   }
-  toggle.addEventListener('click',function(){setCollapsed(!bar.classList.contains('is-collapsed'),true);});
+  toggle.addEventListener('click',function(){
+    var opening=bar.classList.contains('is-collapsed');
+    setCollapsed(!opening,true);
+    if(opening)autoCollapseArmed=false;
+  });
+  window.addEventListener('touchstart',function(){autoCollapseArmed=true;},{passive:true});
+  window.addEventListener('wheel',function(){autoCollapseArmed=true;},{passive:true});
   fields.addEventListener('focusin',function(){setCollapsed(false);});
   var lastScrollY=window.scrollY;
   window.addEventListener('scroll',function(){
     if(!window.matchMedia('(max-width: 767px)').matches)return;
     var y=window.scrollY,delta=y-lastScrollY;lastScrollY=y;
-    if(!delta||fields.contains(document.activeElement)||scrollTransitionLocked)return;
+    if(!delta||fields.contains(document.activeElement)||scrollTransitionLocked||!autoCollapseArmed)return;
     var direction=delta>0?1:-1;
     if(direction!==scrollDirection){scrollDirection=direction;scrollTravel=0;}
     scrollTravel+=Math.abs(delta);

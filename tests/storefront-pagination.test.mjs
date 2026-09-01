@@ -63,7 +63,9 @@ assert.match(script, /wo-store-controls\.is-collapsed \.wo-store-controls-fields
 assert.match(script, /scrollTravel>=48\)setCollapsed\(true,true\)/,'a deliberate downward scroll must collapse the full mobile filter panel');
 assert.doesNotMatch(script, /direction<0&&scrollTravel/,'partial upward scrolling must not expand the filter panel and move the page');
 assert.match(script, /else if\(y<24\)setCollapsed\(false,true\)/,'returning to the top must restore the full filter panel');
-assert.match(script, /toggle\.addEventListener\('click'.+true\)/,'the compact strip must reopen filters under the same transition lock');
+assert.match(script, /setCollapsed\(!opening,true\)/,'the compact strip must reopen filters under the same transition lock');
+assert.match(script, /if\(opening\)autoCollapseArmed=false/,'a manual open must ignore layout-generated scroll until the next gesture');
+assert.match(script, /touchstart.+autoCollapseArmed=true/,'the next touch gesture must re-enable automatic collapse');
 assert.match(script, /scrollTransitionLocked/,'a filter transition must ignore layout-generated reverse scroll events');
 assert.match(script, /overflow-anchor:none/,'the changing filter height must not trigger browser scroll anchoring');
 assert.match(script, /fields\.contains\(document\.activeElement\)/,'focused filter fields must never auto-collapse');
