@@ -61,7 +61,9 @@ assert.match(script, /wo-store-controls-toggle/,'mobile controls must expose a c
 assert.match(script, /aria-expanded/,'the compact filter toggle must announce its state');
 assert.match(script, /wo-store-controls\.is-collapsed \.wo-store-controls-fields/,'mobile filter fields must fade and collapse without removing their values');
 assert.match(script, /scrollTravel>=48\)setCollapsed\(true,true\)/,'a deliberate downward scroll must collapse the full mobile filter panel');
-assert.match(script, /scrollTravel>=96\)setCollapsed\(false,true\)/,'only a deliberate upward scroll must restore the full filter panel');
+assert.doesNotMatch(script, /direction<0&&scrollTravel/,'partial upward scrolling must not expand the filter panel and move the page');
+assert.match(script, /else if\(y<24\)setCollapsed\(false,true\)/,'returning to the top must restore the full filter panel');
+assert.match(script, /toggle\.addEventListener\('click'.+true\)/,'the compact strip must reopen filters under the same transition lock');
 assert.match(script, /scrollTransitionLocked/,'a filter transition must ignore layout-generated reverse scroll events');
 assert.match(script, /overflow-anchor:none/,'the changing filter height must not trigger browser scroll anchoring');
 assert.match(script, /fields\.contains\(document\.activeElement\)/,'focused filter fields must never auto-collapse');
