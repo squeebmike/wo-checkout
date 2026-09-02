@@ -2086,8 +2086,15 @@ document.addEventListener('DOMContentLoaded', function(){
   // Sports is the store's largest secondary department. Replace the old
   // Supplies nav entry at runtime as a safety net while the shared Webflow
   // navigation component is updated.
-  Array.prototype.forEach.call(document.querySelectorAll('nav a,a.w-nav-link'),function(link){
-    if(/^supplies$/i.test((link.textContent||'').trim())){link.textContent='Sports';link.href='/shop?cat=sports-cards';}
+  Array.prototype.forEach.call(document.querySelectorAll('nav a,a.w-nav-link,#navbarID a'),function(link){
+    var href=link.getAttribute('href')||'';
+    if(/^supplies$/i.test((link.textContent||'').trim())||/[?&]cat=supplies(?:&|$)/i.test(href)){
+      var label=link.querySelector('strong');
+      if(label){label.textContent='Sports';var meta=label.nextElementSibling;if(meta)meta.textContent='Baseball, basketball, football & hockey';}
+      else link.textContent='Sports';
+      link.href='/shop?cat=sports-cards';
+      link.setAttribute('data-mp-category','sports-cards');
+    }
   });
   if(params.get('joined') || params.get('pledged')){
     var banner = document.createElement('div');
