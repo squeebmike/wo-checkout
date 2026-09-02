@@ -1004,6 +1004,20 @@ var CART_KEY = 'wo_cart_v1';
 var ACCOUNT_API_BASE = ${JSON.stringify(accountApiBase)};
 var WO_STORE_ID = ${JSON.stringify(storeId)};
 
+// GA4 is installed by Webflow. Keep storefront events useful even when gtag
+// has not finished loading by writing through the standard dataLayer queue.
+// Never include customer names, email addresses, phone numbers, or addresses.
+function trackStorefrontEvent(name, params){
+  try {
+    window.dataLayer = window.dataLayer || [];
+    if(typeof window.gtag === 'function') window.gtag('event', name, params || {});
+    else window.dataLayer.push(Object.assign({event:name}, params || {}));
+  } catch(_) {}
+}
+function analyticsItem(item){
+  return {item_id:String(item&&item.id||''),item_name:String(item&&item.name||'Item'),item_category:String(item&&item.category||''),price:Number(item&&item.price||0),quantity:Math.max(1,parseInt(item&&item.qty,10)||1)};
+}
+
 function getCart(){ try { return JSON.parse(localStorage.getItem(CART_KEY) || '[]'); } catch(e){ return []; } }
 function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c)); renderCartBadge(); }
 // sourceEl is whatever the customer actually clicked (an "Add to Cart"
@@ -1028,6 +1042,7 @@ function addToCart(item, sourceEl){
     cart.push(Object.assign({}, item, { qty: 1 }));
   }
   setCart(cart);
+  trackStorefrontEvent('add_to_cart',{currency:'USD',value:Number(item.price||0),items:[analyticsItem(item)]});
   // The drawer used to pop open on every add, which cut a browsing session
   // short every single time -- a quick flourise toward the cart icon
   // confirms the add without stopping anyone from grabbing more stuff.
@@ -1210,6 +1225,8 @@ function openCartDrawer(){
   var bd = document.getElementById('wo-cart-backdrop');
   bd.style.display = 'block';
   requestAnimationFrame(function(){ bd.style.background = 'rgba(0,0,0,.35)'; });
+  var cart=getCart(),totals=computeTotals(cart);
+  trackStorefrontEvent('view_cart',{currency:'USD',value:totals.grand,items:cart.map(analyticsItem)});
 }
 function closeCartDrawer(){
   var d = document.getElementById('wo-cart-drawer'); if(d) d.style.right = '-420px';
@@ -1403,6 +1420,8 @@ function openCheckoutModal(){
   var m = document.getElementById('wo-checkout-backdrop');
   m.style.display = 'flex';
   requestAnimationFrame(function(){ m.style.background = 'rgba(0,0,0,.5)'; });
+  var totals=computeTotals(cart);
+  trackStorefrontEvent('begin_checkout',{currency:'USD',value:totals.grand,items:cart.map(analyticsItem)});
 }
 
 function closeCheckoutModal(){
@@ -1534,6 +1553,7 @@ function confirmCheckoutPayment(){
         document.getElementById('wo-co-step2').style.display = 'none';
         var successEl = document.getElementById('wo-co-success');
         if(successEl) successEl.style.display = 'block';
+        trackStorefrontEvent('purchase',{transaction_id:String(_piId||''),currency:'USD',value:Number(_checkoutAmountCents||0)/100,items:cart.map(analyticsItem)});
         if(!r.ok || data.error){
           console.error('[WO] order/confirm failed after a successful charge', _piId, data && data.error);
           if(successEl){
@@ -1651,7 +1671,7 @@ function categoryMatchesSlug(itemCategory, slug){
 function buildLiveShopControls(items, onFilterChange){
   if(!document.getElementById('wo-store-controls-mobile-style')){
     var style=document.createElement('style');style.id='wo-store-controls-mobile-style';
-    style.textContent='.wo-store-controls-toggle{display:none}.wo-store-controls-fields{display:contents}@media(max-width:767px){.wo-store-controls{display:block!important;padding:8px!important;overflow-anchor:none;transition:box-shadow .2s ease}.wo-store-controls-toggle{display:flex;width:100%;min-height:48px;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--wo-text,#222);font:700 15px system-ui,sans-serif;text-align:left;cursor:pointer}.wo-store-controls-summary{overflow:hidden;color:var(--wo-text,#666);font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.wo-store-controls-chevron{flex:none;transition:transform .22s ease}.wo-store-controls-fields{display:grid;grid-template-columns:1fr;gap:10px;max-height:360px;margin-top:8px;opacity:1;overflow:hidden;transform:translateY(0);transition:max-height .24s ease,margin .24s ease,opacity .18s ease,transform .24s ease}.wo-store-controls-fields>*{box-sizing:border-box;width:100%;min-width:0!important;max-width:none!important}.wo-store-controls.is-collapsed .wo-store-controls-fields{max-height:0;margin-top:0;opacity:0;pointer-events:none;transform:translateY(-8px)}.wo-store-controls.is-collapsed .wo-store-controls-chevron{transform:rotate(180deg)}}@media(prefers-reduced-motion:reduce){.wo-store-controls,.wo-store-controls-fields,.wo-store-controls-chevron{transition:none!important}}';
+    style.textContent='.wo-store-controls-toggle{display:none}.wo-store-controls-fields{display:contents}@media(max-width:767px){.wo-store-controls{display:block!important;padding:8px!important;overflow-anchor:none;will-change:transform,opacity;transition:transform .24s ease,opacity .18s ease,box-shadow .2s ease}.wo-store-controls.is-scroll-hidden{transform:translateY(calc(-100% - 18px));opacity:0;pointer-events:none}.wo-store-controls-toggle{display:flex;width:100%;min-height:48px;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--wo-text,#222);font:700 15px system-ui,sans-serif;text-align:left;cursor:pointer}.wo-store-controls-summary{overflow:hidden;color:var(--wo-text,#666);font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.wo-store-controls-chevron{flex:none;transition:transform .22s ease}.wo-store-controls-fields{display:grid;grid-template-columns:1fr;gap:10px;max-height:360px;margin-top:8px;opacity:1;overflow:hidden;transform:translateY(0);transition:max-height .24s ease,margin .24s ease,opacity .18s ease,transform .24s ease}.wo-store-controls-fields>*{box-sizing:border-box;width:100%;min-width:0!important;max-width:none!important}.wo-store-controls.is-collapsed .wo-store-controls-fields{max-height:0;margin-top:0;opacity:0;pointer-events:none;transform:translateY(-8px)}.wo-store-controls.is-collapsed .wo-store-controls-chevron{transform:rotate(180deg)}}@media(prefers-reduced-motion:reduce){.wo-store-controls,.wo-store-controls-fields,.wo-store-controls-chevron{transition:none!important}}';
     document.head.appendChild(style);
   }
   var bar=document.createElement('div');
@@ -1705,6 +1725,11 @@ function buildLiveShopControls(items, onFilterChange){
     var summary=toggle.querySelector('.wo-store-controls-summary');if(summary)summary.textContent=parts.join(' \u00b7 ')||'All items';
   }
   var scrollTransitionLocked=false,scrollTravel=0,scrollDirection=0,autoCollapseArmed=true;
+  function setScrollHidden(hidden){
+    if(fields.contains(document.activeElement))hidden=false;
+    bar.classList.toggle('is-scroll-hidden',hidden);
+    bar.setAttribute('aria-hidden',hidden?'true':'false');
+  }
   function setCollapsed(collapsed,lockScroll){
     if(bar.classList.contains('is-collapsed')===collapsed)return;
     bar.classList.toggle('is-collapsed',collapsed);toggle.setAttribute('aria-expanded',collapsed?'false':'true');
@@ -1714,13 +1739,14 @@ function buildLiveShopControls(items, onFilterChange){
     }
   }
   toggle.addEventListener('click',function(){
+    setScrollHidden(false);
     var opening=bar.classList.contains('is-collapsed');
     setCollapsed(!opening,true);
     if(opening)autoCollapseArmed=false;
   });
   window.addEventListener('touchstart',function(){autoCollapseArmed=true;},{passive:true});
   window.addEventListener('wheel',function(){autoCollapseArmed=true;},{passive:true});
-  fields.addEventListener('focusin',function(){setCollapsed(false);});
+  fields.addEventListener('focusin',function(){setScrollHidden(false);setCollapsed(false);});
   var lastScrollY=window.scrollY;
   window.addEventListener('scroll',function(){
     if(!window.matchMedia('(max-width: 767px)').matches)return;
@@ -1729,8 +1755,11 @@ function buildLiveShopControls(items, onFilterChange){
     var direction=delta>0?1:-1;
     if(direction!==scrollDirection){scrollDirection=direction;scrollTravel=0;}
     scrollTravel+=Math.abs(delta);
-    if(direction>0&&y>120&&scrollTravel>=48)setCollapsed(true,true);
-    else if(y<24)setCollapsed(false,true);
+    // Require deliberate travel before changing state. Tiny finger reversals
+    // no longer make the control flicker between hidden and visible.
+    if(direction>0&&y>120&&scrollTravel>=72){setCollapsed(true,false);setScrollHidden(true);scrollTravel=0;}
+    else if(direction<0&&scrollTravel>=56){setScrollHidden(false);scrollTravel=0;}
+    else if(y<24){setScrollHidden(false);setCollapsed(false,false);}
   },{passive:true});
   function fire(){updateSummary();onFilterChange(select.value,type.value||'all',search.value.trim(),sort.value);}
   search.addEventListener('input',fire);
@@ -1802,6 +1831,7 @@ function woComicDetailHtml(c){
 // page/route, so it works regardless of whether this item also happens to
 // have a mirrored Webflow CMS record.
 function openWoLiveItemDetail(item){
+  trackStorefrontEvent('view_item',{currency:'USD',value:Number(item.price||0),items:[analyticsItem(item)]});
   var existing = document.getElementById('wo-live-detail-overlay');
   if(existing) existing.remove();
   var overlay = document.createElement('div');
@@ -1848,8 +1878,12 @@ function openWoLiveItemDetail(item){
 // the sentinel. Filtering starts a fresh server query instead of constructing
 // hundreds of hidden cards and repeatedly laying all of them out.
 function renderLiveInventoryPaged(){
-  var mount = document.getElementById('wo-live-shop');
+  var mounts = Array.prototype.slice.call(document.querySelectorAll('#wo-live-shop'));
+  var mount = mounts[0];
   if(!mount) return;
+  // A legacy Webflow placeholder can coexist with the injected live mount.
+  // Remove only empty duplicates so IDs stay unique without touching content.
+  mounts.slice(1).forEach(function(node){if(!node.children.length&&!node.textContent.trim())node.remove();});
   mount.setAttribute('data-wo-server-paged','true');
   mount.innerHTML = '';
   var grid = document.createElement('div');
@@ -1885,7 +1919,11 @@ function renderLiveInventoryPaged(){
       '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
       '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
       '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';
-    card.addEventListener('click',function(event){ if(!event.target.closest('[data-wo-add-to-cart]')) openWoLiveItemDetail(item); });
+    card.addEventListener('click',function(event){
+      if(event.target.closest('[data-wo-add-to-cart]')) return;
+      trackStorefrontEvent('select_item',{item_list_name:'Shop results',items:[analyticsItem(item)]});
+      openWoLiveItemDetail(item);
+    });
     card.querySelector('[data-wo-add-to-cart]').addEventListener('click',function(event){
       event.preventDefault();
       event.stopPropagation();
@@ -1927,11 +1965,16 @@ function renderLiveInventoryPaged(){
       .finally(function(){ if(token===state.token) state.loading=false; });
   }
 
+  var lastTrackedQuery='';
   var controls=buildLiveShopControls([],function(category,type,query,sort){
     clearTimeout(timer);
     state.token++;state.loading=true;
     timer=setTimeout(function(){
       state.category=category||'all';state.type=type||'all';state.query=query||'';state.sort=sort||'all';
+      if(state.query&&state.query!==lastTrackedQuery){
+        trackStorefrontEvent('search',{search_term:state.query});
+        lastTrackedQuery=state.query;
+      } else if(!state.query){ lastTrackedQuery=''; }
       var url=new URL(location.href);
       ['cat','category','type','subcat','q','search','sort'].forEach(function(key){url.searchParams.delete(key);});
       if(state.category!=='all')url.searchParams.set('cat',state.category);
@@ -2040,6 +2083,12 @@ function readProductFromCarrier(dataEl){
 }
 document.addEventListener('DOMContentLoaded', function(){
   var params = new URLSearchParams(window.location.search);
+  // Sports is the store's largest secondary department. Replace the old
+  // Supplies nav entry at runtime as a safety net while the shared Webflow
+  // navigation component is updated.
+  Array.prototype.forEach.call(document.querySelectorAll('nav a,a.w-nav-link'),function(link){
+    if(/^supplies$/i.test((link.textContent||'').trim())){link.textContent='Sports';link.href='/shop?cat=sports-cards';}
+  });
   if(params.get('joined') || params.get('pledged')){
     var banner = document.createElement('div');
     banner.style.cssText = 'max-width:600px;margin:24px auto;padding:16px 20px;background:#e8f7ee;border:1px solid #34a35a;border-radius:12px;text-align:center;font-weight:600;color:#1d6b34;';
