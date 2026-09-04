@@ -1276,7 +1276,7 @@ function renderDrawerItems(){
           '<span style="min-width:18px;text-align:center;font-size:13px;font-weight:700;color:var(--wo-text,#1a1a1a);">'+qty+'</span>' +
           '<button data-qty-id="'+i.id+'" data-qty-delta="1" aria-label="Increase quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;"'+(qty>=available?' disabled':'')+'>+</button>' +
         '</div></div>' +
-        '<button data-id="'+i.id+'" class="wo-remove-item" aria-label="Remove item" style="background:none;border:1px solid rgba(255,255,255,.2);color:#e5798a;cursor:pointer;font-size:13px;font-weight:700;padding:8px 12px;border-radius:8px;flex-shrink:0;transition:background .15s ease;">Remove</button></div>';
+        '<button data-id="'+i.id+'" class="wo-remove-item" aria-label="Remove item" style="background:none;border:1px solid rgba(255,255,255,.2);color:#ffabb8;cursor:pointer;font-size:13px;font-weight:700;padding:8px 12px;border-radius:8px;flex-shrink:0;transition:background .15s ease;">Remove</button></div>';
     }).join('');
     Array.prototype.forEach.call(wrap.querySelectorAll('.wo-remove-item'), function(btn){
       btn.onclick = function(){ removeFromCart(btn.getAttribute('data-id')); };
@@ -1355,13 +1355,13 @@ function ensureModal(){
           '<input id="wo-co-zip" placeholder="ZIP" autocomplete="postal-code" inputmode="numeric" style="'+WO_INPUT_CSS+'flex:1;">' +
         '</div>' +
       '</div>' +
-      '<div id="wo-co-err1" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+      '<div id="wo-co-err1" style="color:#ffabb8;font-size:13px;margin-bottom:10px;"></div>' +
       '<button id="wo-co-continue" style="width:100%;padding:15px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Continue to Payment</button>' +
     '</div>' +
     '<div id="wo-co-step2" style="display:none;">' +
       '<div id="wo-co-total-line" style="font-size:14px;margin-bottom:12px;color:var(--wo-text,#1a1a1a);"></div>' +
       '<div id="wo-co-payment-element" style="margin:16px 0;"></div>' +
-      '<div id="wo-co-err2" style="color:#e5798a;font-size:13px;margin-bottom:10px;"></div>' +
+      '<div id="wo-co-err2" style="color:#ffabb8;font-size:13px;margin-bottom:10px;"></div>' +
       '<button id="wo-co-pay" style="width:100%;padding:15px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;transition:filter .15s ease;">Place Order</button>' +
       '<div style="text-align:center;font-size:12px;color:var(--wo-text,#999);opacity:.7;margin-top:10px;">Secured by Stripe — your card is charged immediately and your order goes straight into the fulfillment queue.</div>' +
     '</div>' +
@@ -1558,7 +1558,7 @@ function confirmCheckoutPayment(){
           console.error('[WO] order/confirm failed after a successful charge', _piId, data && data.error);
           if(successEl){
             var note = document.createElement('p');
-            note.style.cssText = 'color:#e5798a;font-size:12px;margin-top:8px;';
+            note.style.cssText = 'color:#ffabb8;font-size:12px;margin-top:8px;';
             note.textContent = 'Your payment went through, but we hit a snag saving your order. Please email us your payment reference: ' + _piId;
             successEl.appendChild(note);
           }
@@ -1837,7 +1837,7 @@ function woItemGalleryHtml(item){
       '<img data-wo-detail-image src="'+escapeHtml(images[0])+'" alt="'+escapeHtml(item.name)+'" style="display:block;width:auto;max-width:100%;height:auto;max-height:min(52vh,420px);margin:0 auto;object-fit:contain;border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);">'+
       (many?'<button data-wo-gallery-prev type="button" aria-label="Previous image" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:1px solid rgba(255,255,255,.35);border-radius:50%;background:rgba(0,0,0,.68);color:#fff;font-size:24px;cursor:pointer;">&#8249;</button><button data-wo-gallery-next type="button" aria-label="Next image" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:1px solid rgba(255,255,255,.35);border-radius:50%;background:rgba(0,0,0,.68);color:#fff;font-size:24px;cursor:pointer;">&#8250;</button><span data-wo-gallery-count style="position:absolute;right:10px;bottom:10px;padding:5px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#fff;font:700 11px system-ui,sans-serif;">1 / '+images.length+'</span>':'')+
     '</div>'+
-    (many?'<div data-wo-gallery-thumbs role="list" aria-label="Product images" style="display:flex;gap:8px;overflow-x:auto;padding:2px 1px 6px;scrollbar-width:thin;">'+images.map(function(src,index){return '<button data-wo-image-index="'+index+'" type="button" aria-label="Show image '+(index+1)+'" aria-current="'+(index===0?'true':'false')+'" style="flex:0 0 68px;width:68px;height:68px;padding:3px;border:2px solid '+(index===0?'var(--wo-accent,#1a1a1a)':'transparent')+';border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);cursor:pointer;"><img src="'+escapeHtml(src)+'" alt="" loading="lazy" style="display:block;width:100%;height:100%;object-fit:contain;border-radius:5px;"></button>';}).join('')+'</div>':'')+
+    (many?'<div data-wo-gallery-thumbs role="group" aria-label="Product images" style="display:flex;gap:8px;overflow-x:auto;padding:2px 1px 6px;scrollbar-width:thin;">'+images.map(function(src,index){return '<button data-wo-image-index="'+index+'" type="button" aria-label="Show image '+(index+1)+'" aria-current="'+(index===0?'true':'false')+'" style="flex:0 0 68px;width:68px;height:68px;padding:3px;border:2px solid '+(index===0?'var(--wo-accent,#1a1a1a)':'transparent')+';border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);cursor:pointer;"><img src="'+escapeHtml(src)+'" alt="" loading="lazy" style="display:block;width:100%;height:100%;object-fit:contain;border-radius:5px;"></button>';}).join('')+'</div>':'')+
   '</div>';
 }
 
@@ -1869,7 +1869,7 @@ function openWoLiveItemDetail(item){
     (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
     (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
     '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
-    (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#e5798a;font-weight:700;">Only '+stockQty+' left</div>' : '') +
+    (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#ffabb8;font-weight:700;">Only '+stockQty+' left</div>' : '') +
     '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:14px;">' +
     '<button data-wo-add-to-cart style="min-width:0;padding:12px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
     '<button data-wo-share-item type="button" style="padding:12px 16px;background:transparent;color:var(--wo-text,#1a1a1a);border:1px solid currentColor;border-radius:8px;font-weight:600;cursor:pointer;">Share</button></div>' +
@@ -1944,7 +1944,7 @@ function renderLiveInventoryPaged(){
       (metaLine?'<div style="font-size:12px;color:var(--wo-text,#888);opacity:.75;">'+escapeHtml(metaLine)+'</div>':'') +
       (item.productType?'<div style="font-size:10px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(item.productType)+'</div>':'') +
       (item.isSigned?'<div style="font-size:10px;font-weight:700;color:#92400e;">\u270D Signed'+(item.signedBy?' by '+escapeHtml(item.signedBy):'')+'</div>':'') +
-      (stockQty>0?'<div style="font-size:11px;color:'+(stockQty<=3?'#e5798a':'var(--wo-text,#888)')+';font-weight:'+(stockQty<=3?'700':'400')+';">'+(stockQty<=3?'Only '+stockQty+' left':stockQty+' in stock')+'</div>':'') +
+      (stockQty>0?'<div style="font-size:11px;color:'+(stockQty<=3?'#ffabb8':'var(--wo-text,#888)')+';font-weight:'+(stockQty<=3?'700':'400')+';">'+(stockQty<=3?'Only '+stockQty+' left':stockQty+' in stock')+'</div>':'') +
       '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
       '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
       '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';

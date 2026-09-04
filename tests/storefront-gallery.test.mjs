@@ -15,6 +15,7 @@ assert.match(script,/item&&item\.photos/,'saved photos must be included');
 assert.match(script,/item&&item\.images/,'legacy and Pocket Scout images must be included');
 assert.match(script,/data-wo-item-gallery/,'the item modal must render a gallery');
 assert.match(script,/data-wo-gallery-thumbs/,'multi-image items must expose selectable thumbnails');
+assert.match(script,/data-wo-gallery-thumbs role="group"/,'gallery buttons must use a valid accessible grouping role');
 assert.match(script,/data-wo-gallery-prev/,'the gallery must provide a previous-image control');
 assert.match(script,/data-wo-gallery-next/,'the gallery must provide a next-image control');
 assert.match(script,/aria-current/,'the selected thumbnail must be announced accessibly');
