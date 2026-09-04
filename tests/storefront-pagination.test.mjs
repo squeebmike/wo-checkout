@@ -60,9 +60,9 @@ assert.match(script, /controls\.productTypeOptions\(\[\],cat\)/,'a comic preorde
 assert.match(script, /wo-store-controls-toggle/,'mobile controls must expose a compact filter toggle');
 assert.match(script, /aria-expanded/,'the compact filter toggle must announce its state');
 assert.match(script, /wo-store-controls\.is-collapsed \.wo-store-controls-fields/,'mobile filter fields must fade and collapse without removing their values');
-assert.match(script, /scrollTravel>=48\)setCollapsed\(true,true\)/,'a deliberate downward scroll must collapse the full mobile filter panel');
-assert.doesNotMatch(script, /direction<0&&scrollTravel/,'partial upward scrolling must not expand the filter panel and move the page');
-assert.match(script, /else if\(y<24\)setCollapsed\(false,true\)/,'returning to the top must restore the full filter panel');
+assert.match(script, /direction>0&&y>120&&scrollTravel>=72\)\{setCollapsed\(true,false\);setScrollHidden\(true\)/,'a deliberate downward scroll must collapse and hide the mobile filter panel');
+assert.match(script, /direction<0&&scrollTravel>=56\)\{setScrollHidden\(false\)/,'a deliberate upward scroll must restore the compact filter strip without expanding the fields');
+assert.match(script, /else if\(y<24\)\{setScrollHidden\(false\);setCollapsed\(false,false\)/,'returning to the top must restore the full filter panel');
 assert.match(script, /setCollapsed\(!opening,true\)/,'the compact strip must reopen filters under the same transition lock');
 assert.match(script, /if\(opening\)autoCollapseArmed=false/,'a manual open must ignore layout-generated scroll until the next gesture');
 assert.match(script, /touchstart.+autoCollapseArmed=true/,'the next touch gesture must re-enable automatic collapse');

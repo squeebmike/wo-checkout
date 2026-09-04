@@ -1823,6 +1823,24 @@ function woComicDetailHtml(c){
   return html;
 }
 
+function woItemImages(item){
+  var candidates=[item&&item.image].concat(Array.isArray(item&&item.photos)?item.photos:[],Array.isArray(item&&item.images)?item.images:[]);
+  return candidates.map(function(value){return String(value||'').trim();}).filter(function(value,index,all){return /^(?:https?:\\/\\/|data:image\\/)/i.test(value)&&all.indexOf(value)===index;}).slice(0,12);
+}
+
+function woItemGalleryHtml(item){
+  var images=woItemImages(item);
+  if(!images.length)return '';
+  var many=images.length>1;
+  return '<div data-wo-item-gallery style="display:grid;gap:10px;">'+
+    '<div style="position:relative;">'+
+      '<img data-wo-detail-image src="'+escapeHtml(images[0])+'" alt="'+escapeHtml(item.name)+'" style="display:block;width:100%;height:min(52vh,420px);object-fit:contain;border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);">'+
+      (many?'<button data-wo-gallery-prev type="button" aria-label="Previous image" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:1px solid rgba(255,255,255,.35);border-radius:50%;background:rgba(0,0,0,.68);color:#fff;font-size:24px;cursor:pointer;">&#8249;</button><button data-wo-gallery-next type="button" aria-label="Next image" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:1px solid rgba(255,255,255,.35);border-radius:50%;background:rgba(0,0,0,.68);color:#fff;font-size:24px;cursor:pointer;">&#8250;</button><span data-wo-gallery-count style="position:absolute;right:10px;bottom:10px;padding:5px 8px;border-radius:999px;background:rgba(0,0,0,.72);color:#fff;font:700 11px system-ui,sans-serif;">1 / '+images.length+'</span>':'')+
+    '</div>'+
+    (many?'<div data-wo-gallery-thumbs role="list" aria-label="Product images" style="display:flex;gap:8px;overflow-x:auto;padding:2px 1px 6px;scrollbar-width:thin;">'+images.map(function(src,index){return '<button data-wo-image-index="'+index+'" type="button" aria-label="Show image '+(index+1)+'" aria-current="'+(index===0?'true':'false')+'" style="flex:0 0 68px;width:68px;height:68px;padding:3px;border:2px solid '+(index===0?'var(--wo-accent,#1a1a1a)':'transparent')+';border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);cursor:pointer;"><img src="'+escapeHtml(src)+'" alt="" loading="lazy" style="display:block;width:100%;height:100%;object-fit:contain;border-radius:5px;"></button>';}).join('')+'</div>':'')+
+  '</div>';
+}
+
 // Live-inventory cards used to have nothing to click but "Add to Cart" --
 // no detail view at all, so signature status and comic info (both now
 // present on 'item' since renderLiveInventory calls the real
@@ -1845,7 +1863,7 @@ function openWoLiveItemDetail(item){
   card.style.cssText = 'width:100%;max-width:520px;background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
   card.innerHTML =
     '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--wo-text,#888);opacity:.7;line-height:1;">&times;</button>' +
-    (item.image ? '<img src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" style="width:100%;max-height:340px;object-fit:contain;border-radius:8px;background:var(--wo-surface-alt,#f2f2f2);">' : '') +
+    woItemGalleryHtml(item) +
     '<div style="font-size:11px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
     '<div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
     (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
@@ -1858,6 +1876,17 @@ function openWoLiveItemDetail(item){
     woComicDetailHtml(item.comic);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
+  var galleryImages=woItemImages(item),galleryIndex=0;
+  function showGalleryImage(nextIndex){
+    if(!galleryImages.length)return;
+    galleryIndex=(nextIndex+galleryImages.length)%galleryImages.length;
+    var main=card.querySelector('[data-wo-detail-image]');if(main){main.src=galleryImages[galleryIndex];main.alt=item.name+' — image '+(galleryIndex+1)+' of '+galleryImages.length;}
+    var count=card.querySelector('[data-wo-gallery-count]');if(count)count.textContent=(galleryIndex+1)+' / '+galleryImages.length;
+    Array.prototype.forEach.call(card.querySelectorAll('[data-wo-image-index]'),function(button){var selected=Number(button.getAttribute('data-wo-image-index'))===galleryIndex;button.setAttribute('aria-current',selected?'true':'false');button.style.borderColor=selected?'var(--wo-accent,#1a1a1a)':'transparent';});
+  }
+  var previous=card.querySelector('[data-wo-gallery-prev]');if(previous)previous.addEventListener('click',function(){showGalleryImage(galleryIndex-1);});
+  var next=card.querySelector('[data-wo-gallery-next]');if(next)next.addEventListener('click',function(){showGalleryImage(galleryIndex+1);});
+  Array.prototype.forEach.call(card.querySelectorAll('[data-wo-image-index]'),function(button){button.addEventListener('click',function(){showGalleryImage(Number(button.getAttribute('data-wo-image-index')));});});
   card.querySelector('[data-wo-close-detail]').addEventListener('click', function(){ overlay.remove(); });
   card.querySelector('[data-wo-add-to-cart]').addEventListener('click', function(e){
     e.preventDefault();
