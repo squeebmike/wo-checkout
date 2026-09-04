@@ -1848,14 +1848,32 @@ function woItemGalleryHtml(item){
 // to show. This is a lightweight in-page modal instead of a real detail
 // page/route, so it works regardless of whether this item also happens to
 // have a mirrored Webflow CMS record.
-function openWoLiveItemDetail(item){
+function openWoLiveItemDetail(item, returnFocus){
   trackStorefrontEvent('view_item',{currency:'USD',value:Number(item.price||0),items:[analyticsItem(item)]});
   var existing = document.getElementById('wo-live-detail-overlay');
   if(existing) existing.remove();
+  var previousFocus = returnFocus || document.activeElement;
   var overlay = document.createElement('div');
   overlay.id = 'wo-live-detail-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-labelledby','wo-live-detail-title');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 12px;';
-  overlay.addEventListener('click', function(e){ if(e.target === overlay) overlay.remove(); });
+  function closeDetail(){
+    document.removeEventListener('keydown',handleDetailKeydown,true);
+    if(overlay.parentNode)overlay.remove();
+    if(previousFocus&&typeof previousFocus.focus==='function'&&document.contains(previousFocus))requestAnimationFrame(function(){previousFocus.focus();});
+  }
+  function detailFocusables(){return Array.prototype.slice.call(card.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'));}
+  function handleDetailKeydown(event){
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeDetail();return;}
+    if(event.key!=='Tab')return;
+    var focusable=detailFocusables();if(!focusable.length){event.preventDefault();return;}
+    var first=focusable[0],last=focusable[focusable.length-1];
+    if(event.shiftKey&&(document.activeElement===first||document.activeElement===overlay)){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+  }
+  overlay.addEventListener('click', function(e){ if(e.target === overlay) closeDetail(); });
   var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
   var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
   var shareUrl = API_BASE + '/share/item?id=' + encodeURIComponent(item.id);
@@ -1865,7 +1883,7 @@ function openWoLiveItemDetail(item){
     '<button data-wo-close-detail aria-label="Close" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--wo-text,#888);opacity:.7;line-height:1;">&times;</button>' +
     woItemGalleryHtml(item) +
     '<div style="font-size:11px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;margin-top:14px;">'+escapeHtml(item.category||'')+'</div>' +
-    '<div style="font-size:20px;font-weight:800;margin-top:4px;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
+    '<div id="wo-live-detail-title" style="font-size:20px;font-weight:800;margin-top:4px;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
     (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
     (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
     '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
@@ -1887,11 +1905,18 @@ function openWoLiveItemDetail(item){
   var previous=card.querySelector('[data-wo-gallery-prev]');if(previous)previous.addEventListener('click',function(){showGalleryImage(galleryIndex-1);});
   var next=card.querySelector('[data-wo-gallery-next]');if(next)next.addEventListener('click',function(){showGalleryImage(galleryIndex+1);});
   Array.prototype.forEach.call(card.querySelectorAll('[data-wo-image-index]'),function(button){button.addEventListener('click',function(){showGalleryImage(Number(button.getAttribute('data-wo-image-index')));});});
-  card.querySelector('[data-wo-close-detail]').addEventListener('click', function(){ overlay.remove(); });
+  var swipeTarget=card.querySelector('[data-wo-detail-image]'),touchStartX=0,touchStartY=0;
+  if(swipeTarget&&galleryImages.length>1){
+    swipeTarget.style.touchAction='pan-y';
+    swipeTarget.addEventListener('touchstart',function(event){var touch=event.changedTouches&&event.changedTouches[0];if(touch){touchStartX=touch.clientX;touchStartY=touch.clientY;}},{passive:true});
+    swipeTarget.addEventListener('touchend',function(event){var touch=event.changedTouches&&event.changedTouches[0];if(!touch)return;var dx=touch.clientX-touchStartX,dy=touch.clientY-touchStartY;if(Math.abs(dx)>=45&&Math.abs(dx)>Math.abs(dy)*1.25)showGalleryImage(galleryIndex+(dx<0?1:-1));},{passive:true});
+  }
+  var closeButton=card.querySelector('[data-wo-close-detail]');
+  closeButton.addEventListener('click', closeDetail);
   card.querySelector('[data-wo-add-to-cart]').addEventListener('click', function(e){
     e.preventDefault();
     addToCart({ id:item.id, name:item.name, price:Number(item.price||0), image:item.image||'', available: stockQty || 1 }, e.currentTarget);
-    overlay.remove();
+    closeDetail();
   });
   card.querySelector('[data-wo-share-item]').addEventListener('click', function(){
     if(navigator.share){
@@ -1900,6 +1925,8 @@ function openWoLiveItemDetail(item){
     }
     window.open('https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(shareUrl), '_blank', 'noopener,noreferrer,width=640,height=520');
   });
+  document.addEventListener('keydown',handleDetailKeydown,true);
+  requestAnimationFrame(function(){closeButton.focus();});
 }
 
 // Server-paged storefront renderer. Only a small first batch is downloaded
@@ -1930,6 +1957,9 @@ function renderLiveInventoryPaged(){
   function itemCard(item, prioritizeImage){
     var card = document.createElement('article');
     card.className = 'wo-live-card';
+    card.tabIndex = 0;
+    card.setAttribute('aria-label','View details for '+(item.name||'item'));
+    card.setAttribute('data-wo-item-id',item.id||'');
     card.setAttribute('data-category', item.categorySlug || (item.category || '').toLowerCase());
     card.setAttribute('data-product-type', item.productTypeSlug || '');
     card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;content-visibility:auto;contain-intrinsic-size:420px;';
@@ -1951,7 +1981,13 @@ function renderLiveInventoryPaged(){
     card.addEventListener('click',function(event){
       if(event.target.closest('[data-wo-add-to-cart]')) return;
       trackStorefrontEvent('select_item',{item_list_name:'Shop results',items:[analyticsItem(item)]});
-      openWoLiveItemDetail(item);
+      openWoLiveItemDetail(item,card);
+    });
+    card.addEventListener('keydown',function(event){
+      if(event.target!==card||(event.key!=='Enter'&&event.key!==' '))return;
+      event.preventDefault();
+      trackStorefrontEvent('select_item',{item_list_name:'Shop results',items:[analyticsItem(item)]});
+      openWoLiveItemDetail(item,card);
     });
     card.querySelector('[data-wo-add-to-cart]').addEventListener('click',function(event){
       event.preventDefault();
@@ -2115,7 +2151,7 @@ document.addEventListener('DOMContentLoaded', function(){
   // Sports is the store's largest secondary department. Replace the old
   // Supplies nav entry at runtime as a safety net while the shared Webflow
   // navigation component is updated.
-  Array.prototype.forEach.call(document.querySelectorAll('nav a,a.w-nav-link,#navbarID a'),function(link){
+  Array.prototype.forEach.call(document.querySelectorAll('#navbarID a'),function(link){
     var href=link.getAttribute('href')||'';
     if(/^supplies$/i.test((link.textContent||'').trim())||/[?&]cat=supplies(?:&|$)/i.test(href)){
       var label=link.querySelector('strong');
