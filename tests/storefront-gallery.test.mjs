@@ -19,6 +19,8 @@ assert.match(script,/data-wo-gallery-prev/,'the gallery must provide a previous-
 assert.match(script,/data-wo-gallery-next/,'the gallery must provide a next-image control');
 assert.match(script,/aria-current/,'the selected thumbnail must be announced accessibly');
 assert.match(script,/showGalleryImage/,'gallery controls must update the main product image');
+assert.doesNotMatch(script,/;height:min\(52vh,420px\)/,'landscape photos must not sit inside a tall fixed-height mobile box');
+assert.match(script,/max-height:min\(52vh,420px\)/,'portrait photos must still be capped to the available viewport height');
 
 const helperStart=script.indexOf('function woItemImages');
 const helperEnd=script.indexOf('// Live-inventory cards',helperStart);
