@@ -1768,7 +1768,14 @@ function buildLiveShopControls(items, onFilterChange){
   clear.addEventListener('click',function(){select.value='all';populate(type,[],'All product types');search.value='';sort.value='all';search.dispatchEvent(new Event('input',{bubbles:true}));});
   function update(options){
     if(!options)return;
-    populate(select,options.categories,'All categories',select.value);
+    // Keep navigation slugs as the request value (they can span categories),
+    // but reuse a single matching database facet instead of adding a duplicate.
+    var categories=(options.categories||[]).slice(),current=select.value;
+    if(CATEGORY_SLUG_MAP[current]&&current!=='tcg'&&!categories.some(function(entry){return entry.value===current;})){
+      var matches=categories.filter(function(entry){return categoryMatchesSlug(entry.label,current);});
+      if(matches.length===1)categories=categories.map(function(entry){return entry===matches[0]?Object.assign({},entry,{value:current}):entry;});
+    }
+    populate(select,categories,'All categories',current);
     populate(type,productTypeOptions(options.types,select.value),'All product types',type.value);
     updateSummary();
   }
