@@ -1971,22 +1971,38 @@ function renderLiveInventoryPaged(){
     card.setAttribute('data-product-type', item.productTypeSlug || '');
     card.style.cssText = 'border:1px solid rgba(255,255,255,.12);border-radius:12px;overflow:hidden;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);display:flex;flex-direction:column;cursor:pointer;content-visibility:auto;contain-intrinsic-size:420px;';
     var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
+    // Drop-ship items (e.g. BCW supplies fulfilled by the vendor, not held
+    // in the store's own stock) carry an inflated quantity so they always
+    // read as purchasable, but showing "999 in stock" would be a lie about
+    // physical inventory -- suppress the count line for these instead.
+    var isDropship = !!item.dropship;
     var metaLine = [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' \u00b7 ');
+    var itemHref = '/item/'+encodeURIComponent(item.id||'');
     var image = item.image
       ? '<img loading="'+(prioritizeImage?'eager':'lazy')+'"'+(prioritizeImage?' fetchpriority="high"':'')+' decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
       : '<div aria-hidden="true" style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
-    card.innerHTML = image +
-      '<div class="wo-live-card-body" style="padding:12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
+    // The image+name are wrapped in a real <a href="/item/{id}"> so crawlers
+    // (which never run this click handler) have an actual followable,
+    // indexable URL per item -- see cloudflare-worker-full.js's /item/{id}
+    // route. JS click/keydown handling below preventDefaults the navigation
+    // for real visitors so it still opens the instant in-page modal.
+    card.innerHTML =
+      '<a class="wo-live-card-link" href="'+escapeHtml(itemHref)+'" style="display:block;color:inherit;text-decoration:none;" tabindex="-1">' +
+      image +
+      '<div class="wo-live-card-body" style="padding:12px 12px 0;display:flex;flex-direction:column;gap:6px;">' +
       '<div style="font-size:14px;font-weight:600;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
       (metaLine?'<div style="font-size:12px;color:var(--wo-text,#888);opacity:.75;">'+escapeHtml(metaLine)+'</div>':'') +
       (item.productType?'<div style="font-size:10px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(item.productType)+'</div>':'') +
       (item.isSigned?'<div style="font-size:10px;font-weight:700;color:#92400e;">\u270D Signed'+(item.signedBy?' by '+escapeHtml(item.signedBy):'')+'</div>':'') +
-      (stockQty>0?'<div style="font-size:11px;color:'+(stockQty<=3?'#ffabb8':'var(--wo-text,#888)')+';font-weight:'+(stockQty<=3?'700':'400')+';">'+(stockQty<=3?'Only '+stockQty+' left':stockQty+' in stock')+'</div>':'') +
+      (!isDropship&&stockQty>0?'<div style="font-size:11px;color:'+(stockQty<=3?'#ffabb8':'var(--wo-text,#888)')+';font-weight:'+(stockQty<=3?'700':'400')+';">'+(stockQty<=3?'Only '+stockQty+' left':stockQty+' in stock')+'</div>':'') +
+      '</div></a>' +
+      '<div class="wo-live-card-footer" style="padding:0 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
       '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
       '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
       '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';
     card.addEventListener('click',function(event){
       if(event.target.closest('[data-wo-add-to-cart]')) return;
+      if(event.target.closest('.wo-live-card-link')) event.preventDefault();
       trackStorefrontEvent('select_item',{item_list_name:'Shop results',items:[analyticsItem(item)]});
       openWoLiveItemDetail(item,card);
     });
