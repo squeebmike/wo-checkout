@@ -146,6 +146,15 @@ var RUN_DROP_LIMITS = {
   "dougvana-color": 100
 };
 
+// Drop-ship items (item.dropship -- e.g. BCW supplies fulfilled by the
+// vendor, not physically stocked) carry an inflated quantity (999) purely
+// so they read as purchasable/in-stock; that number was never meant to be
+// a real per-order limit. Store owner hasn't settled on real per-item caps
+// yet, so this is a single flat placeholder enforced both client-side
+// (itemCard/addToCart, for immediate UI feedback) and here server-side
+// (the actual, tamper-proof limit -- see the stock re-check below).
+var DROPSHIP_MAX_QTY_PER_ORDER = 10;
+
 // Strips legacy "-signed"/"-unsigned" suffixes and remarque add-on suffixes
 // (e.g. "dougvana-color--remarque-standard-cassette", "dougvana-color--remarque-deluxe")
 // so every variant of a run-drop item still counts against the same colorway cap
@@ -461,8 +470,17 @@ async function handleCreateIntent(request, env, origin) {
     try {
       const result = await fetchInventoryApi(env, "/public/storefront/item?store_id=" + encodeURIComponent(getStoreId(env)) + "&id=" + encodeURIComponent(it.id));
       const item = result.data && result.data.item;
-      if (!result.ok || !result.data || !result.data.ok || !item || Number(item.quantity || 0) < qty) {
+      if (!result.ok || !result.data || !result.data.ok || !item) {
         return json({ error: `"${it.name || it.id}" doesn't have ${qty} available. Refresh your cart and try again.` }, 409, corsHeaders(origin));
+      }
+      // Drop-ship items' stored quantity (999) is a "counts as in stock"
+      // placeholder, not a real per-order limit -- cap against
+      // DROPSHIP_MAX_QTY_PER_ORDER instead of trusting it. This is the
+      // authoritative check (unlike the client-side cap in itemCard, which
+      // a tampered request could bypass).
+      const maxAllowed = item.dropship ? Math.min(Number(item.quantity || 0), DROPSHIP_MAX_QTY_PER_ORDER) : Number(item.quantity || 0);
+      if (maxAllowed < qty) {
+        return json({ error: item.dropship ? `You can order at most ${DROPSHIP_MAX_QTY_PER_ORDER} of "${it.name || item.name}" per order.` : `"${it.name || it.id}" doesn't have ${qty} available. Refresh your cart and try again.` }, 409, corsHeaders(origin));
       }
       it.price = Number(item.price || 0);
     } catch (e) {
@@ -2015,7 +2033,12 @@ function renderLiveInventoryPaged(){
     card.querySelector('[data-wo-add-to-cart]').addEventListener('click',function(event){
       event.preventDefault();
       event.stopPropagation();
-      addToCart({id:item.id,name:item.name,price:Number(item.price||0),image:item.image||'',available:stockQty||1},event.currentTarget);
+      // Client-side cap for immediate UI feedback only -- the checkout's
+      // own stock re-check (see DROPSHIP_MAX_QTY_PER_ORDER server-side) is
+      // what actually enforces this; this just avoids letting the cart
+      // stepper climb past a limit checkout would reject anyway.
+      var cartAvailable = isDropship ? Math.min(stockQty||1, 10) : (stockQty||1);
+      addToCart({id:item.id,name:item.name,price:Number(item.price||0),image:item.image||'',available:cartAvailable},event.currentTarget);
     });
     return card;
   }
