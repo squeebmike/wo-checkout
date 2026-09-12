@@ -1820,6 +1820,16 @@ function escapeHtml(s){
   });
 }
 
+// Mirrors ArSca's itemDetailSlug()/mtgSlugify() exactly -- must produce the
+// same slug the /item/{id}/{slug} route treats as canonical, or every card
+// link here would 301-redirect through ArSca on first load instead of
+// landing straight on the real page.
+function itemDetailSlug(name){
+  return String(name || '')
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+}
+
 // Book details/story/creators block for comic items -- the vending
 // software only attaches 'comic' when the item actually has a saved Metron
 // record, so this renders nothing otherwise. Mirrors the same section on
@@ -1995,7 +2005,7 @@ function renderLiveInventoryPaged(){
     // physical inventory -- suppress the count line for these instead.
     var isDropship = !!item.dropship;
     var metaLine = [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' \u00b7 ');
-    var itemHref = '/item/'+encodeURIComponent(item.id||'');
+    var itemHref = '/item/'+encodeURIComponent(item.id||'')+'/'+encodeURIComponent(itemDetailSlug(item.name));
     var image = item.image
       ? '<img loading="'+(prioritizeImage?'eager':'lazy')+'"'+(prioritizeImage?' fetchpriority="high"':'')+' decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
       : '<div aria-hidden="true" style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
