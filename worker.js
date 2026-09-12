@@ -2005,7 +2005,12 @@ function renderLiveInventoryPaged(){
     // physical inventory -- suppress the count line for these instead.
     var isDropship = !!item.dropship;
     var metaLine = [item.set,item.year,item.variant,item.condition].filter(Boolean).join(' \u00b7 ');
-    var itemHref = '/item/'+encodeURIComponent(item.id||'')+'/'+encodeURIComponent(itemDetailSlug(item.name));
+    // An item with its own dedicated page (e.g. a limited-run print
+    // preorder built as a real page) links straight there instead of the
+    // normal item-detail URL/modal -- see linkUrl in shapeStorefrontItem
+    // (ArSca) and the "Custom Link URL" edit-modal field (dashboard.html).
+    var hasCustomLink = !!item.linkUrl;
+    var itemHref = hasCustomLink ? item.linkUrl : '/item/'+encodeURIComponent(item.id||'')+'/'+encodeURIComponent(itemDetailSlug(item.name));
     var image = item.image
       ? '<img loading="'+(prioritizeImage?'eager':'lazy')+'"'+(prioritizeImage?' fetchpriority="high"':'')+' decoding="async" src="'+escapeHtml(item.image)+'" alt="'+escapeHtml(item.name)+'" width="440" height="440" style="width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--wo-surface,#f2f2f2);">'
       : '<div aria-hidden="true" style="width:100%;aspect-ratio:1/1;background:var(--wo-surface,#f2f2f2);"></div>';
@@ -2026,8 +2031,19 @@ function renderLiveInventoryPaged(){
       '</div></a>' +
       '<div class="wo-live-card-footer" style="padding:0 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
       '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
-      '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+      (hasCustomLink ? '' : '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>') +
       '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';
+    if(hasCustomLink){
+      // No modal, no cart line -- the whole card is just a real link to the
+      // item's own page. Clicking/activating it navigates like any <a>.
+      card.addEventListener('keydown',function(event){
+        if(event.target!==card||(event.key!=='Enter'&&event.key!==' '))return;
+        event.preventDefault();
+        trackStorefrontEvent('select_item',{item_list_name:'Shop results',items:[analyticsItem(item)]});
+        location.href=item.linkUrl;
+      });
+      return card;
+    }
     card.addEventListener('click',function(event){
       if(event.target.closest('[data-wo-add-to-cart]')) return;
       if(event.target.closest('.wo-live-card-link')) event.preventDefault();
