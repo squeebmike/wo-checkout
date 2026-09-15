@@ -103,6 +103,16 @@
 // time. Renamed every reference to the real --wo-surface/--wo-surface-alt/
 // --wo-accent/--wo-text variables so this UI actually re-themes when a
 // visitor picks a team.
+//
+// FIX (2026-09-15): Dougvana prints were hardcoded to ship free (the
+// getRunDropKey/FREE_SHIP_PREFIXES check in both shippingForPrice()
+// implementations), an estimate the store owner never actually priced in.
+// Removed the carve-out so Dougvana items are charged shipping through the
+// same price-tiered schedule (DEFAULT_SHIPPING_TIERS / WO_SHIPPING_TIERS)
+// as every other item -- real, non-zero shipping instead of an absorbed
+// guess. Also updated the "Ship to me" option's description text, which
+// still advertised the old flat $3/$7 estimate long after the tiers below
+// replaced it.
 // ============================================================================
 
 var ALLOWED_ORIGINS = [
@@ -157,8 +167,7 @@ var DROPSHIP_MAX_QTY_PER_ORDER = 10;
 
 // Strips legacy "-signed"/"-unsigned" suffixes and remarque add-on suffixes
 // (e.g. "dougvana-color--remarque-standard-cassette", "dougvana-color--remarque-deluxe")
-// so every variant of a run-drop item still counts against the same colorway cap
-// and still gets free shipping.
+// so every variant of a run-drop item still counts against the same colorway cap.
 function getRunDropKey(itemId) {
   if (!itemId) return null;
   const stripped = itemId.replace(/--remarque-.*$/, "").replace(/-(signed|unsigned)$/, "");
@@ -277,7 +286,6 @@ function getShippingTiers(env) {
 }
 
 function shippingForPrice(price, tiers, itemId) {
-  if (getRunDropKey(itemId)) return 0; // Dougvana run-drop items ship free — cost absorbed into margin
   const p = Number(price) || 0;
   for (const tier of tiers) {
     if (tier.max === null || tier.max === undefined || p <= tier.max) return Number(tier.rate) || 0;
@@ -1252,9 +1260,7 @@ function closeCartDrawer(){
   if(bd){ bd.style.background = 'rgba(0,0,0,0)'; setTimeout(function(){ bd.style.display = 'none'; }, 250); }
 }
 
-var FREE_SHIP_PREFIXES = ['dougvana-color'];
 function shippingForPrice(price, id){
-  if (id && FREE_SHIP_PREFIXES.some(function(p){ return id.indexOf(p) === 0; })) return 0;
   var p = Number(price) || 0;
   for (var i=0;i<SHIP_TIERS.length;i++){
     var tier = SHIP_TIERS[i];
@@ -1331,7 +1337,7 @@ var _fulfillMethod = 'pickup_fedway';
 var FULFILL_OPTIONS = [
   { method:'pickup_fedway', label:'Local Pickup — Fed Way Commons', desc:'We’re there most weekends. We’ll text/call to arrange a pickup time.' },
   { method:'pickup_kitsap', label:'Local Meetup — Kitsap County', desc:'We’ll coordinate a meeting spot and time with you directly.' },
-  { method:'shipping', label:'Ship to me', desc:'$3 flat rate for 3 raw singles or less, $7 for everything else.' }
+  { method:'shipping', label:'Ship to me', desc:'Calculated by item price at checkout.' }
 ];
 
 var WO_INPUT_CSS = 'width:100%;box-sizing:border-box;padding:13px 14px;margin-bottom:10px;border:1.5px solid rgba(255,255,255,.2);border-radius:9px;font-size:15px;color:var(--wo-text,#1a1a1a);background:var(--wo-surface-alt,#fafafa);outline:none;transition:border-color .15s ease,background .15s ease;';
