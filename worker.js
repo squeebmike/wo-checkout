@@ -245,6 +245,25 @@ async function handleRunDropStock(request, env, origin) {
   return json({ runs }, 200, corsHeaders(origin));
 }
 
+// Public stock lookup for a real inventory_items row -- used by pages that
+// sell a real catalog item but want to show "X left" without going through
+// the full /public/storefront list (e.g. the Dougvana print page, whose
+// three price variants -- base/standard/deluxe remarque -- share one
+// 100-print pool via data.linkedStockIds; any of the three reports the same
+// synced remaining count).
+async function handleItemStock(request, env, origin) {
+  const url = new URL(request.url);
+  const itemId = String(url.searchParams.get("id") || "").trim();
+  if (!/^[0-9a-f-]{36}$/i.test(itemId)) return json({ ok: false, error: "Valid id required" }, 400, corsHeaders(origin));
+  try {
+    const result = await fetchInventoryApi(env, "/public/storefront/item?store_id=" + encodeURIComponent(getStoreId(env)) + "&id=" + encodeURIComponent(itemId));
+    if (!result.ok || !result.data || !result.data.item) return json({ ok: false }, result.status || 404, corsHeaders(origin));
+    return json({ ok: true, quantity: Math.max(0, Number(result.data.item.quantity || 0)) }, 200, corsHeaders(origin));
+  } catch (e) {
+    return json({ ok: false, error: "Could not check stock" }, 502, corsHeaders(origin));
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Live inventory (Supabase-backed, via the vending software's existing
 // public storefront endpoint for reads; direct Supabase writes for decrement)
@@ -2507,6 +2526,7 @@ export default {
       if (path === "/api/inventory" && request.method === "GET") return await handleInventoryList(request, env, origin);
       if (path === "/share/item" && request.method === "GET") return await handleItemShare(request, env);
       if (path === "/api/rundrop-stock" && request.method === "GET") return await handleRunDropStock(request, env, origin);
+      if (path === "/api/item-stock" && request.method === "GET") return await handleItemStock(request, env, origin);
       if (path === "/api/debug-supabase" && request.method === "GET") return await handleDebugSupabase(request, env, origin);
       if (path === "/api/membership/subscribe" && request.method === "POST") return await handleMembershipSubscribe(request, env, origin);
       if (path === "/api/pledge/donate" && request.method === "POST") return await handlePledgeDonate(request, env, origin);
