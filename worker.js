@@ -257,8 +257,14 @@ async function handleItemStock(request, env, origin) {
   if (!/^[0-9a-f-]{36}$/i.test(itemId)) return json({ ok: false, error: "Valid id required" }, 400, corsHeaders(origin));
   try {
     const result = await fetchInventoryApi(env, "/public/storefront/item?store_id=" + encodeURIComponent(getStoreId(env)) + "&id=" + encodeURIComponent(itemId));
-    if (!result.ok || !result.data || !result.data.item) return json({ ok: false }, result.status || 404, corsHeaders(origin));
-    return json({ ok: true, quantity: Math.max(0, Number(result.data.item.quantity || 0)) }, 200, corsHeaders(origin));
+    // ArSca's /public/storefront/item still includes item in the body on a
+    // 409 (unavailable) response -- e.g. a real, found row that's just at
+    // 0 quantity, exactly the case this endpoint most needs to report
+    // accurately. Only a genuinely missing/errored row (no item at all)
+    // counts as a real failure here.
+    const item = result.data && result.data.item;
+    if (!item) return json({ ok: false }, result.status || 404, corsHeaders(origin));
+    return json({ ok: true, quantity: Math.max(0, Number(item.quantity || 0)) }, 200, corsHeaders(origin));
   } catch (e) {
     return json({ ok: false, error: "Could not check stock" }, 502, corsHeaders(origin));
   }
@@ -2078,6 +2084,11 @@ function renderLiveInventoryPaged(){
       (item.productType?'<div style="font-size:10px;color:var(--wo-text,#888);opacity:.7;text-transform:uppercase;">'+escapeHtml(item.productType)+'</div>':'') +
       (item.isSigned?'<div style="font-size:10px;font-weight:700;color:#92400e;">\u270D Signed'+(item.signedBy?' by '+escapeHtml(item.signedBy):'')+'</div>':'') +
       (!isDropship&&stockQty>0?'<div style="font-size:11px;color:'+(stockQty<=3?'#ffabb8':'var(--wo-text,#888)')+';font-weight:'+(stockQty<=3?'700':'400')+';">'+(stockQty<=3?'Only '+stockQty+' left':stockQty+' in stock')+'</div>':'') +
+      // A card only ever reaches this with 0 stock when the item opted into
+      // showSoldOut (ArSca's isStorefrontItemListable) -- every other
+      // sold-out item still just disappears from the listing entirely, so
+      // this never shows up unasked-for.
+      (!isDropship&&stockQty<=0?'<div style="font-size:11px;font-weight:700;color:#ffabb8;text-transform:uppercase;letter-spacing:.03em;">Sold Out</div>':'') +
       '</div></a>' +
       '<div class="wo-live-card-footer" style="padding:0 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
       '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
