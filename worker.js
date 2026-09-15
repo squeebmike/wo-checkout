@@ -2187,6 +2187,24 @@ window.WO.setCart = setCart;
 // trigger the exact same add-to-cart flourish instead of building its own,
 // so a comic pull lands with the same 90s flair as a regular item.
 window.WO.playAddToCartFlourish = playAddToCartFlourish;
+// Called by storefront-checkout.js (wo-scripts, loaded site-wide) when the
+// shared cart holds a run-drop line (e.g. the Dougvana print, added with a
+// synthetic id like "dougvana-color" instead of a real inventory_items
+// row) -- that checkout only knows how to quote/charge real inventory
+// rows and rejects anything else with "Invalid item in cart". Those lines
+// get routed here instead, into this Worker's own already-working
+// checkout (real Stripe charge, flat-tier shipping, and the run-drop stock
+// counter). The lines argument isn't used directly -- storefront-checkout.js
+// only calls this when the cart is entirely run-drop lines, so the shared
+// cart this modal reads via getCart() already is just those lines.
+window.WO.checkoutRundropLines = function(lines, onDone){
+  // No completion hook back to the caller -- openCheckoutModal() just opens
+  // UI the customer still has to complete (or abandon); unlike a promise,
+  // there's nothing here to await. onDone exists only so the call shape
+  // matches window.WO.checkoutPreorderLines (storefront-checkout.js calls
+  // both the same way); it's never invoked today.
+  openCheckoutModal();
+};
 
 // Account modal (email/password + a mandatory phone-verify gate before
 // showing any account data) retired -- superseded by the /account,
