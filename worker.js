@@ -156,6 +156,19 @@ var RUN_DROP_LIMITS = {
   "dougvana-color": 100
 };
 
+// Each run-drop key's matching catalog entry in the dashboard's own
+// inventory_items -- store-owner-facing, so staff/POS see "X left" for the
+// print the same as any other item, instead of that number only living in
+// this Worker's own WO_ORDERS counter. Every remarque variant is still the
+// same physical poster, so a sale of any of them decrements this by 1 per
+// order (see the recordItems mapping in handleConfirmOrder below), never by
+// price or which remarque was picked. A run-drop key with no entry here
+// just isn't linked to a dashboard row yet -- record-order gets itemId:null
+// for it instead, same as before this map existed.
+var RUN_DROP_INVENTORY_ITEM_IDS = {
+  "dougvana-color": "1e18c84c-5f57-4762-8afb-c193184e5a24"
+};
+
 // Drop-ship items (item.dropship -- e.g. BCW supplies fulfilled by the
 // vendor, not physically stocked) carry an inflated quantity (999) purely
 // so they read as purchasable/in-stock; that number was never meant to be
@@ -629,13 +642,16 @@ async function handleConfirmOrder(request, env, origin) {
       email: (body.customer || {}).email || '',
       shippingAddress: body.shipping && body.shipping.address1 ? { line1: body.shipping.address1, city: body.shipping.city, state: body.shipping.state, zip: body.shipping.zip } : null,
     };
-    const recordItems = (order.items || []).map((it) => ({
-      itemId: getRunDropKey(it.id) ? null : (it.id || null),
-      name: it.name || 'Item',
-      price: Number(it.price || 0),
-      quantity: Math.max(1, parseInt(it.qty, 10) || 1),
-      category: getRunDropKey(it.id) ? 'Print' : 'Card',
-    }));
+    const recordItems = (order.items || []).map((it) => {
+      const runKey = getRunDropKey(it.id);
+      return {
+        itemId: runKey ? (RUN_DROP_INVENTORY_ITEM_IDS[runKey] || null) : (it.id || null),
+        name: it.name || 'Item',
+        price: Number(it.price || 0),
+        quantity: Math.max(1, parseInt(it.qty, 10) || 1),
+        category: runKey ? 'Print' : 'Card',
+      };
+    });
     const recordRes = await env.INVENTORY_API.fetch(getInventoryApiBase(env) + '/public/storefront/record-order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -690,9 +706,18 @@ async function handleAdminCapture(request, env, origin) {
       order.capturedAt = new Date().toISOString();
       await env.WO_ORDERS.put("order:" + piId, JSON.stringify(order));
       await Promise.all((order.items || []).filter((i) => i.id).map((it) => env.WO_RESERVATIONS.delete("item:" + it.id)));
-      // Decrement live inventory in Supabase so it also shows sold-out in the vending software
+      // Decrement live inventory in Supabase so it also shows sold-out in the vending software.
+      // Run-drop items (e.g. the Dougvana print) never have their own id as a
+      // real inventory_items row -- resolve through RUN_DROP_INVENTORY_ITEM_IDS
+      // the same way handleConfirmOrder's recordItems does, so this rare
+      // manual-capture path decrements the same linked dashboard row instead
+      // of silently no-op'ing on a lookup for "dougvana-color".
       if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-        await Promise.all((order.items || []).filter((i) => i.id).map((it) => decrementInventoryItem(env, it.id, it.qty)));
+        await Promise.all((order.items || []).filter((i) => i.id).map((it) => {
+          const runKey = getRunDropKey(it.id);
+          const linkedItemId = runKey ? RUN_DROP_INVENTORY_ITEM_IDS[runKey] : it.id;
+          return linkedItemId ? decrementInventoryItem(env, linkedItemId, it.qty) : null;
+        }));
         // Inventory just changed — drop the cached storefront list so the site reflects it immediately
         try { await env.WO_RESERVATIONS.delete("inventory:" + getStoreId(env)); } catch (e) {}
       }
