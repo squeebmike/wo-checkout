@@ -933,6 +933,18 @@ function shareEscape(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; });
 }
 
+// Server-side twin of the itemDetailSlug() defined further down inside the
+// client-side /wo-cart.js script string (worker.js ~1832) -- that one only
+// exists in the browser, not in this Worker's own scope, so a server route
+// like handleItemShare below needs its own copy. Must mirror ArSca's
+// itemDetailSlug()/mtgSlugify() exactly or the link this builds would
+// 301-redirect through ArSca instead of landing straight on the real page.
+function shareItemDetailSlug(name) {
+  return String(name || '')
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+}
+
 async function handleItemShare(request, env) {
   const url = new URL(request.url);
   const itemId = String(url.searchParams.get('id') || '').trim();
@@ -941,7 +953,12 @@ async function handleItemShare(request, env) {
     const result = await fetchInventoryApi(env, '/public/storefront/item?store_id=' + encodeURIComponent(getStoreId(env)) + '&id=' + encodeURIComponent(itemId));
     if (!result.ok || !result.data?.item) return new Response('Item unavailable', { status:404 });
     const item = result.data.item;
-    const destination = 'https://themanapocket.com/shop?item=' + encodeURIComponent(item.id);
+    // Store report: this used to send anyone who actually opened a shared
+    // link to '/shop?item=...' -- a query param nothing on the shop page
+    // reads, so it landed on the plain grid with no sign of the item that
+    // was shared. Points at the real /item/{id}/{slug} page instead, the
+    // same URL the share button itself now links to directly.
+    const destination = 'https://themanapocket.com/item/' + encodeURIComponent(item.id) + '/' + encodeURIComponent(shareItemDetailSlug(item.name));
     const description = ['$'+Number(item.price || 0).toFixed(2), item.comic?.description || [item.category,item.set,item.year,item.variant,item.condition].filter(Boolean).join(' · '), 'Available from The Mana Pocket'].filter(Boolean).join(' · ').slice(0, 280);
     const title = shareEscape(item.name || 'The Mana Pocket item');
     const image = shareEscape([item.image,...(item.photos || [])].find(value => /^https?:\/\//i.test(value || '')) || '');
@@ -1967,7 +1984,13 @@ function openWoLiveItemDetail(item, returnFocus){
   overlay.addEventListener('click', function(e){ if(e.target === overlay) closeDetail(); });
   var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
   var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
-  var shareUrl = API_BASE + '/share/item?id=' + encodeURIComponent(item.id);
+  // Store report: the old '/share/item?id=' link 404'd whenever the
+  // service-binding item lookup it depended on failed, and even on success
+  // only ever redirected to '/shop?item=...' -- a query param nothing in
+  // this file reads, so the modal never reopened for whoever opened the
+  // link. Points straight at the real, always-working /item/{id}/{slug}
+  // SEO page instead, same URL the grid card's own <a href> already uses.
+  var shareUrl = 'https://themanapocket.com/item/' + encodeURIComponent(item.id || '') + '/' + encodeURIComponent(itemDetailSlug(item.name));
   var card = document.createElement('div');
   card.style.cssText = 'width:100%;max-width:520px;background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
   card.innerHTML =

@@ -12,7 +12,7 @@ for(const agent of ['facebookexternalhit/1.1','Twitterbot','Mozilla/5.0']){
   assert.match(html,/<link rel="canonical" href="https:\/\/wo.test\/share\/item\?id=public-1">/);
   assert.doesNotMatch(html,/http-equiv="refresh"/i,'crawlers must retain product metadata');
   assert.match(html,/twitter:card/);
-  assert.match(html,/location.replace\("https:\/\/themanapocket.com\/shop\?item=public-1"\)/);
+  assert.match(html,/location.replace\("https:\/\/themanapocket.com\/item\/public-1\/jackson-holliday-rookie"\)/);
 }
 const missing=await worker.fetch(new Request('https://wo.test/share/item?id=hidden'),{INVENTORY_API:{fetch:async()=>Response.json({ok:false},{status:404})}},{});
 assert.equal(missing.status,404,'share route must preserve publication checks');
