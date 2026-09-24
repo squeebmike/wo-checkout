@@ -1111,6 +1111,70 @@ function analyticsItem(item){
   return {item_id:String(item&&item.id||''),item_name:String(item&&item.name||'Item'),item_category:String(item&&item.category||''),price:Number(item&&item.price||0),quantity:Math.max(1,parseInt(item&&item.qty,10)||1)};
 }
 
+// Store report (mobile): the cart drawer, checkout modal, and item-detail
+// modal all left the page scrolling in the background while a shopper
+// scrolled inside the modal itself, and the phone's back button/gesture
+// navigated away from the shop entirely instead of just closing whatever
+// modal was open. Shared here instead of fixed per-modal so every current
+// and future overlay in this file gets both fixes the same way.
+//
+// Scroll lock: overflow:hidden on <body> alone does not reliably stop
+// background scroll/rubber-banding on iOS Safari -- body position:fixed
+// does, but resets scroll position, so the current scrollY is saved and
+// restored on unlock. Counted (not a plain boolean) so one modal opening
+// while another is already open (the cart drawer's own Checkout button
+// opens the checkout modal on top of it) unlocks only once every opener
+// has closed, not after the first one.
+var _woScrollLockCount = 0, _woScrollLockY = 0;
+function woLockBodyScroll(){
+  if(_woScrollLockCount === 0){
+    _woScrollLockY = window.scrollY || window.pageYOffset || 0;
+    document.body.style.position = 'fixed';
+    document.body.style.top = (-_woScrollLockY) + 'px';
+    document.body.style.left = '0';
+    document.body.style.right = '0';
+    document.body.style.width = '100%';
+  }
+  _woScrollLockCount++;
+}
+function woUnlockBodyScroll(){
+  _woScrollLockCount = Math.max(0, _woScrollLockCount - 1);
+  if(_woScrollLockCount === 0){
+    document.body.style.position = '';
+    document.body.style.top = '';
+    document.body.style.left = '';
+    document.body.style.right = '';
+    document.body.style.width = '';
+    window.scrollTo(0, _woScrollLockY);
+  }
+}
+
+// Back-button-closes-modal: each open pushes one history entry (same URL,
+// so the address bar never changes); a stack, not a single slot, so
+// stacked modals (checkout opened from the cart drawer) close one at a
+// time, innermost first, matching what the shopper actually sees.
+// Every close -- the X button, tapping outside, Escape, or a successful
+// "Add to Cart" -- goes through woRequestModalClose (history.back()) and
+// NEVER calls the real close function directly. The popstate handler below
+// is the only place that pops the stack and performs the actual close, so
+// the same button/gesture/API works identically whether the shopper
+// dismissed the modal from inside the page or with the phone's back
+// button/gesture, and the history stack never drifts out of sync with
+// what's actually on screen.
+var _woModalStack = [];
+window.addEventListener('popstate', function(){
+  var closeTop = _woModalStack.pop();
+  if(closeTop) closeTop();
+});
+function woPushModal(onClose){
+  _woModalStack.push(onClose);
+  woLockBodyScroll();
+  history.pushState({ woModal:true }, '', location.href);
+}
+function woRequestModalClose(){
+  if(_woModalStack.length) history.back();
+}
+
 function getCart(){ try { return JSON.parse(localStorage.getItem(CART_KEY) || '[]'); } catch(e){ return []; } }
 function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c)); renderCartBadge(); }
 // sourceEl is whatever the customer actually clicked (an "Add to Cart"
@@ -1289,7 +1353,7 @@ function ensureDrawer(){
   bd.id = 'wo-cart-backdrop';
   bd.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0);z-index:99998;display:none;transition:background .25s ease;';
   document.body.appendChild(bd);
-  bd.onclick = closeCartDrawer;
+  bd.onclick = woRequestModalClose;
 
   var d = document.createElement('div');
   d.id = 'wo-cart-drawer';
@@ -1306,7 +1370,7 @@ function ensureDrawer(){
   document.body.appendChild(d);
   document.getElementById('wo-cart-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
   document.getElementById('wo-cart-close').onmouseleave = function(){ this.style.background = 'none'; };
-  document.getElementById('wo-cart-close').onclick = closeCartDrawer;
+  document.getElementById('wo-cart-close').onclick = woRequestModalClose;
   document.getElementById('wo-cart-checkout').onclick = openCheckoutModal;
   document.getElementById('wo-cart-checkout').onmouseenter = function(){ this.style.filter = 'brightness(1.1)'; };
   document.getElementById('wo-cart-checkout').onmouseleave = function(){ this.style.filter = 'none'; };
@@ -1320,8 +1384,10 @@ function openCartDrawer(){
   requestAnimationFrame(function(){ bd.style.background = 'rgba(0,0,0,.35)'; });
   var cart=getCart(),totals=computeTotals(cart);
   trackStorefrontEvent('view_cart',{currency:'USD',value:totals.grand,items:cart.map(analyticsItem)});
+  woPushModal(closeCartDrawer);
 }
 function closeCartDrawer(){
+  woUnlockBodyScroll();
   var d = document.getElementById('wo-cart-drawer'); if(d) d.style.right = '-420px';
   var bd = document.getElementById('wo-cart-backdrop');
   if(bd){ bd.style.background = 'rgba(0,0,0,0)'; setTimeout(function(){ bd.style.display = 'none'; }, 250); }
@@ -1463,11 +1529,11 @@ function ensureModal(){
     '</div>' +
   '</div>';
   document.body.appendChild(m);
-  m.onclick = function(e){ if(e.target === m) closeCheckoutModal(); };
+  m.onclick = function(e){ if(e.target === m) woRequestModalClose(); };
   document.getElementById('wo-checkout-modal').onclick = function(e){ e.stopPropagation(); };
   document.getElementById('wo-co-close').onmouseenter = function(){ this.style.background = 'rgba(255,255,255,.1)'; };
   document.getElementById('wo-co-close').onmouseleave = function(){ this.style.background = 'none'; };
-  document.getElementById('wo-co-close').onclick = closeCheckoutModal;
+  document.getElementById('wo-co-close').onclick = woRequestModalClose;
   document.getElementById('wo-co-continue').onclick = submitCheckoutStep1;
   document.getElementById('wo-co-pay').onmouseenter = function(){ this.style.filter = 'brightness(1.1)'; };
   document.getElementById('wo-co-pay').onmouseleave = function(){ this.style.filter = 'none'; };
@@ -1513,9 +1579,11 @@ function openCheckoutModal(){
   requestAnimationFrame(function(){ m.style.background = 'rgba(0,0,0,.5)'; });
   var totals=computeTotals(cart);
   trackStorefrontEvent('begin_checkout',{currency:'USD',value:totals.grand,items:cart.map(analyticsItem)});
+  woPushModal(closeCheckoutModal);
 }
 
 function closeCheckoutModal(){
+  woUnlockBodyScroll();
   var m = document.getElementById('wo-checkout-backdrop');
   if(!m) return;
   m.style.background = 'rgba(0,0,0,0)';
@@ -1968,20 +2036,21 @@ function openWoLiveItemDetail(item, returnFocus){
   overlay.setAttribute('aria-labelledby','wo-live-detail-title');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 12px;';
   function closeDetail(){
+    woUnlockBodyScroll();
     document.removeEventListener('keydown',handleDetailKeydown,true);
     if(overlay.parentNode)overlay.remove();
     if(previousFocus&&typeof previousFocus.focus==='function'&&document.contains(previousFocus))requestAnimationFrame(function(){previousFocus.focus();});
   }
   function detailFocusables(){return Array.prototype.slice.call(card.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'));}
   function handleDetailKeydown(event){
-    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeDetail();return;}
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();woRequestModalClose();return;}
     if(event.key!=='Tab')return;
     var focusable=detailFocusables();if(!focusable.length){event.preventDefault();return;}
     var first=focusable[0],last=focusable[focusable.length-1];
     if(event.shiftKey&&(document.activeElement===first||document.activeElement===overlay)){event.preventDefault();last.focus();}
     else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
   }
-  overlay.addEventListener('click', function(e){ if(e.target === overlay) closeDetail(); });
+  overlay.addEventListener('click', function(e){ if(e.target === overlay) woRequestModalClose(); });
   var metaLine = [item.set, item.year, item.variant, item.condition].filter(Boolean).join(' \\u00b7 ');
   var stockQty = Math.max(0, parseInt(item.quantity, 10) || 0);
   // Store report: the old '/share/item?id=' link 404'd whenever the
@@ -2026,11 +2095,11 @@ function openWoLiveItemDetail(item, returnFocus){
     swipeTarget.addEventListener('touchend',function(event){var touch=event.changedTouches&&event.changedTouches[0];if(!touch)return;var dx=touch.clientX-touchStartX,dy=touch.clientY-touchStartY;if(Math.abs(dx)>=45&&Math.abs(dx)>Math.abs(dy)*1.25)showGalleryImage(galleryIndex+(dx<0?1:-1));},{passive:true});
   }
   var closeButton=card.querySelector('[data-wo-close-detail]');
-  closeButton.addEventListener('click', closeDetail);
+  closeButton.addEventListener('click', woRequestModalClose);
   card.querySelector('[data-wo-add-to-cart]').addEventListener('click', function(e){
     e.preventDefault();
     addToCart({ id:item.id, name:item.name, price:Number(item.price||0), image:item.image||'', available: stockQty || 1 }, e.currentTarget);
-    closeDetail();
+    woRequestModalClose();
   });
   card.querySelector('[data-wo-share-item]').addEventListener('click', function(){
     if(navigator.share){
@@ -2041,6 +2110,7 @@ function openWoLiveItemDetail(item, returnFocus){
   });
   document.addEventListener('keydown',handleDetailKeydown,true);
   requestAnimationFrame(function(){closeButton.focus();});
+  woPushModal(closeDetail);
 }
 
 // Server-paged storefront renderer. Only a small first batch is downloaded

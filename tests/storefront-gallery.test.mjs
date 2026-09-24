@@ -21,7 +21,11 @@ assert.match(script,/data-wo-gallery-next/,'the gallery must provide a next-imag
 assert.match(script,/aria-current/,'the selected thumbnail must be announced accessibly');
 assert.match(script,/showGalleryImage/,'gallery controls must update the main product image');
 assert.match(script,/aria-modal','true'/,'the item detail must be announced as a modal dialog');
-assert.match(script,/event\.key==='Escape'.+closeDetail\(\)/s,'Escape must close the product detail');
+// Escape now requests a close through the shared history-back path (see
+// modal-scroll-lock-and-back-button.test.mjs) instead of calling the real
+// closeDetail() directly, so the phone's back button and Escape both close
+// the modal the same way and the pushed history entry never gets stranded.
+assert.match(script,/event\.key==='Escape'.+woRequestModalClose\(\)/s,'Escape must close the product detail');
 assert.match(script,/event\.key!=='Tab'/,'Tab handling must keep keyboard focus inside the product detail');
 assert.match(script,/previousFocus\.focus\(\)/,'closing product details must return focus to the originating card');
 assert.match(script,/card\.tabIndex = 0/,'product cards must be keyboard focusable');
