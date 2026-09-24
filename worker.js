@@ -958,7 +958,7 @@ async function handleItemShare(request, env) {
     // reads, so it landed on the plain grid with no sign of the item that
     // was shared. Points at the real /item/{id}/{slug} page instead, the
     // same URL the share button itself now links to directly.
-    const destination = 'https://themanapocket.com/item/' + encodeURIComponent(item.id) + '/' + encodeURIComponent(shareItemDetailSlug(item.name));
+    const destination = 'https://www.themanapocket.com/item/' + encodeURIComponent(item.id) + '/' + encodeURIComponent(shareItemDetailSlug(item.name));
     const description = ['$'+Number(item.price || 0).toFixed(2), item.comic?.description || [item.category,item.set,item.year,item.variant,item.condition].filter(Boolean).join(' · '), 'Available from The Mana Pocket'].filter(Boolean).join(' · ').slice(0, 280);
     const title = shareEscape(item.name || 'The Mana Pocket item');
     const image = shareEscape([item.image,...(item.photos || [])].find(value => /^https?:\/\//i.test(value || '')) || '');
@@ -2059,7 +2059,7 @@ function openWoLiveItemDetail(item, returnFocus){
   // this file reads, so the modal never reopened for whoever opened the
   // link. Points straight at the real, always-working /item/{id}/{slug}
   // SEO page instead, same URL the grid card's own <a href> already uses.
-  var shareUrl = 'https://themanapocket.com/item/' + encodeURIComponent(item.id || '') + '/' + encodeURIComponent(itemDetailSlug(item.name));
+  var shareUrl = 'https://www.themanapocket.com/item/' + encodeURIComponent(item.id || '') + '/' + encodeURIComponent(itemDetailSlug(item.name));
   var card = document.createElement('div');
   card.style.cssText = 'width:100%;max-width:520px;background:var(--wo-surface,#fff);color:var(--wo-text,#1a1a1a);border-radius:14px;padding:20px;position:relative;';
   card.innerHTML =
