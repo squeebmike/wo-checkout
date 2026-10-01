@@ -1176,7 +1176,10 @@ function woRequestModalClose(){
 }
 
 function getCart(){ try { return JSON.parse(localStorage.getItem(CART_KEY) || '[]'); } catch(e){ return []; } }
-function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c)); renderCartBadge(); }
+function getBookCart(){try { var c=JSON.parse(localStorage.getItem('mp-backlist-cart-v1')||'[]');return Array.isArray(c)?c:[]; }catch(_){return [];}}
+function getDisplayCart(){return getCart().concat(getBookCart());}
+function setBookCart(c){localStorage.setItem('mp-backlist-cart-v1',JSON.stringify(c));renderCartBadge();window.dispatchEvent(new Event('mp-book-cart-changed'));}
+function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c.filter(function(i){return i.kind!=='backlist';}))); renderCartBadge(); }
 // sourceEl is whatever the customer actually clicked (an "Add to Cart"
 // button) -- used only to find a nearby product image for the flourish
 // animation below. Never required: callers that don't have one (e.g. a
@@ -1323,26 +1326,27 @@ function playAddToCartFlourish(sourceEl){
     anim.onfinish = function(){ shine.remove(); bounceCartIcon(toggle); };
   }
 }
-function removeFromCart(id){ setCart(getCart().filter(function(i){ return i.id !== id; })); renderDrawerItems(); }
+function removeFromCart(id){ if(String(id).indexOf('backlist:')===0)setBookCart(getBookCart().filter(function(i){return i.id!==id;}));else setCart(getCart().filter(function(i){ return i.id !== id; })); renderDrawerItems(); }
 // Lets a customer bump quantity up/down right in the cart drawer instead of
 // having to close it and re-find the item on the page -- purely local cart
 // state, no network round trip, so it works fine even on a slow connection.
 function changeCartQty(id, delta){
-  var cart = getCart();
+  var book=String(id).indexOf('backlist:')===0;
+  var cart = book?getBookCart():getCart();
   var line = cart.find(function(i){ return i.id === id; });
   if(!line) return;
-  var available = Math.max(1, parseInt(line.available, 10) || 1);
+  var available = book?20:Math.max(1, parseInt(line.available, 10) || 1);
   var next = (parseInt(line.qty, 10) || 1) + delta;
   if(next <= 0){ removeFromCart(id); return; }
   if(next > available){ alert('Only ' + available + ' of "' + (line.name || 'this item') + '" available.'); return; }
   line.qty = next;
-  setCart(cart);
+  if(book)setBookCart(cart);else setCart(cart);
   renderDrawerItems();
 }
 
 function renderCartBadge(){
   var badge = document.getElementById('wo-cart-badge');
-  if(badge) badge.textContent = getCart().reduce(function(s,i){ return s + Math.max(1, parseInt(i.qty,10)||1); }, 0);
+  if(badge) badge.textContent = getDisplayCart().reduce(function(s,i){ return s + Math.max(1, parseInt(i.qty,10)||1); }, 0);
 }
 
 var WO_CLOSE_BTN_CSS = 'background:none;border:none;font-size:26px;line-height:1;width:40px;height:40px;min-width:40px;border-radius:50%;cursor:pointer;color:var(--wo-text,#1a1a1a);display:flex;align-items:center;justify-content:center;transition:background .15s ease;';
@@ -1372,6 +1376,7 @@ function ensureDrawer(){
   document.getElementById('wo-cart-close').onmouseleave = function(){ this.style.background = 'none'; };
   document.getElementById('wo-cart-close').onclick = woRequestModalClose;
   document.getElementById('wo-cart-checkout').onclick = openCheckoutModal;
+  document.getElementById('wo-cart-checkout').addEventListener('click',function(event){if(!getCart().length&&getBookCart().length){event.preventDefault();event.stopImmediatePropagation();location.href='/books?cart=1';}},true);
   document.getElementById('wo-cart-checkout').onmouseenter = function(){ this.style.filter = 'brightness(1.1)'; };
   document.getElementById('wo-cart-checkout').onmouseleave = function(){ this.style.filter = 'none'; };
 }
@@ -1407,13 +1412,13 @@ function computeTotals(cart){
   // tier -- their own checkout (a separate step, per FOC cycle) quotes real
   // pickup/shipping on its own, so folding them into this estimate would
   // just be wrong, not just redundant.
-  var shipping = cart.reduce(function(s,i){ if(i.kind==='preorder')return s; var qty = Math.max(1, parseInt(i.qty,10)||1); return s + shippingForPrice(i.price, i.id) * qty; }, 0);
+  var shipping = cart.reduce(function(s,i){ if(i.kind==='preorder'||i.kind==='backlist')return s; var qty = Math.max(1, parseInt(i.qty,10)||1); return s + shippingForPrice(i.price, i.id) * qty; }, 0);
   var hasPreorder = cart.some(function(i){ return i.kind==='preorder'; });
   return { subtotal: subtotal, shipping: shipping, grand: subtotal + shipping, hasPreorder: hasPreorder };
 }
 
 function renderDrawerItems(){
-  var cart = getCart();
+  var cart = getDisplayCart();
   var wrap = document.getElementById('wo-cart-items');
   if(!wrap) return;
   if(!cart.length){
@@ -1421,12 +1426,12 @@ function renderDrawerItems(){
   } else {
     wrap.innerHTML = cart.map(function(i){
       var qty = Math.max(1, parseInt(i.qty,10)||1);
-      var available = Math.max(1, parseInt(i.available,10)||1);
+      var available = i.kind==='backlist'?20:Math.max(1, parseInt(i.available,10)||1);
       var lineTotal = (Number(i.price)||0) * qty;
       return '<div style="display:flex;gap:14px;margin-bottom:18px;align-items:center;padding-bottom:18px;border-bottom:1px solid rgba(255,255,255,.1);">' +
         (i.image ? '<img src="'+i.image+'" style="width:84px;height:84px;object-fit:cover;border-radius:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.25);">' : '') +
         '<div style="flex:1;min-width:0;"><div style="font-size:16px;font-weight:700;color:var(--wo-text,#1a1a1a);line-height:1.3;margin-bottom:4px;">'+(i.name||'Item')+'</div>' +
-        (i.kind==='preorder' ? '<div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--wo-accent,#8bd450);margin:-2px 0 6px;">Comic preorder'+(i.focDate?' · FOC '+i.focDate:'')+'</div>' : '') +
+        (i.kind==='backlist' ? '<div>Publisher backorder</div>' : i.kind==='preorder' ? '<div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--wo-accent,#8bd450);margin:-2px 0 6px;">Comic preorder'+(i.focDate?' · FOC '+i.focDate:'')+'</div>' : '<div>In stock</div>') +
         '<div style="font-size:15px;color:var(--wo-text,#555);opacity:.85;font-weight:600;margin-bottom:8px;">$'+(Number(i.price)||0).toFixed(2)+(qty>1?' \\u00d7 '+qty+' = $'+lineTotal.toFixed(2):'')+'</div>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
           '<button data-qty-id="'+i.id+'" data-qty-delta="-1" aria-label="Decrease quantity" style="width:28px;height:28px;border:1px solid rgba(255,255,255,.25);border-radius:6px;background:var(--wo-surface-alt,#fff);color:var(--wo-text,#1a1a1a);font-size:16px;font-weight:800;cursor:pointer;line-height:1;padding:0;">\\u2212</button>' +
@@ -1452,6 +1457,7 @@ function renderDrawerItems(){
     '<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--wo-text,#1a1a1a);padding-top:10px;border-top:1px solid rgba(255,255,255,.15);"><span>Total</span><span>$'+totals.grand.toFixed(2)+'</span></div>' +
     (totals.hasPreorder ? '<div style="font-size:11px;color:var(--wo-text,#888);opacity:.75;margin-top:10px;line-height:1.4;">Comic preorders are paid separately, one FOC week at a time, with their own pickup/shipping choice -- checkout will walk you through each.</div>' : '');
   renderCartBadge();
+  if(totalsEl&&getBookCart().length)totalsEl.insertAdjacentHTML('beforeend','<p>Publisher books are checked out separately from shelf stock and preorders.</p><a href="/books?cart=1" style="display:block;padding:14px;text-align:center;color:inherit;border:1px solid currentColor;border-radius:8px">Checkout publisher books →</a>');
 }
 
 var _stripe=null,_elements=null,_pe=null,_cs=null,_reservationId=null,_piId=null;
@@ -2323,7 +2329,10 @@ window.WO.addToCart = addToCart;
 window.WO.openCart = openCartDrawer;
 window.WO.joinFanClub = joinFanClub;
 window.WO.makePledge = makePledge;
-window.WO.getCart = getCart;
+window.WO.getCart = getDisplayCart;
+window.WO.refreshCart = renderCartBadge;
+window.addEventListener('storage',renderCartBadge);
+document.addEventListener('click',function(){setTimeout(renderCartBadge,80);});
 window.WO.removeFromCart = removeFromCart;
 // Exposed so the comic-preorder flow (preorders.js, loaded site-wide) can
 // merge saved picks back in with an exact quantity and remove just-paid
