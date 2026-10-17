@@ -1185,6 +1185,9 @@ function setCart(c){ localStorage.setItem(CART_KEY, JSON.stringify(c.filter(func
 // animation below. Never required: callers that don't have one (e.g. a
 // deep-link auto-add) just get a flourish variant that doesn't need it.
 function addToCart(item, sourceEl){
+  // A missing selling price is pending, never a free item. Keep this guard
+  // at the shared boundary as well as on the visible product buttons.
+  if(!woPriceConfirmed(item)||(item.available!=null&&Number(item.available)<=0))return false;
   var cart = getCart();
   // "available" comes from the item's real Supabase stock count (embedded
   // on the card by renderLiveInventory / the wo-d-qty carrier field) --
@@ -2075,10 +2078,10 @@ function openWoLiveItemDetail(item, returnFocus){
     '<div id="wo-live-detail-title" style="font-size:20px;font-weight:800;margin-top:4px;color:var(--wo-text,#1a1a1a);">'+escapeHtml(item.name)+'</div>' +
     (metaLine ? '<div style="font-size:12px;color:var(--wo-text,#888);opacity:.7;margin-top:4px;">'+escapeHtml(metaLine)+'</div>' : '') +
     (item.isSigned ? '<div style="display:inline-block;margin-top:8px;padding:3px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;">\\u270D Signed'+(item.signedBy ? ' by '+escapeHtml(item.signedBy) : '')+'</div>' : '') +
-    '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
+    '<div style="font-size:22px;font-weight:800;margin-top:10px;color:var(--wo-text,#1a1a1a);">'+woItemPriceLabel(item)+'</div>' +
     (stockQty > 0 && stockQty <= 3 ? '<div style="font-size:11px;color:#ffabb8;font-weight:700;">Only '+stockQty+' left</div>' : '') +
     '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-top:14px;">' +
-    '<button data-wo-add-to-cart style="min-width:0;padding:12px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>' +
+    '<button data-wo-add-to-cart '+(woItemCanBuy(item)?'':'disabled aria-disabled="true" ')+'style="min-width:0;padding:12px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">'+(stockQty<=0?'Sold out':woPriceConfirmed(item)?'Add to Cart':'Price to be confirmed')+'</button>' +
     '<button data-wo-share-item type="button" style="padding:12px 16px;background:transparent;color:var(--wo-text,#1a1a1a);border:1px solid currentColor;border-radius:8px;font-weight:600;cursor:pointer;">Share</button></div>' +
     woComicDetailHtml(item.comic);
   overlay.appendChild(card);
@@ -2123,6 +2126,9 @@ function openWoLiveItemDetail(item, returnFocus){
 // and turned into DOM nodes; later batches arrive when the customer reaches
 // the sentinel. Filtering starts a fresh server query instead of constructing
 // hundreds of hidden cards and repeatedly laying all of them out.
+function woPriceConfirmed(item){var price=Number(item&&item.price);return Number.isFinite(price)&&price>0;}
+function woItemPriceLabel(item){return woPriceConfirmed(item)?'$'+Number(item.price).toFixed(2):'Price to be confirmed';}
+function woItemCanBuy(item){return woPriceConfirmed(item)&&Number(item.quantity)>0;}
 function renderLiveInventoryPaged(){
   var mounts = Array.prototype.slice.call(document.querySelectorAll('#wo-live-shop'));
   var mount = mounts[0];
@@ -2190,8 +2196,8 @@ function renderLiveInventoryPaged(){
       (!isDropship&&stockQty<=0?'<div style="font-size:11px;font-weight:700;color:#ffabb8;text-transform:uppercase;letter-spacing:.03em;">Sold Out</div>':'') +
       '</div></a>' +
       '<div class="wo-live-card-footer" style="padding:0 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1;">' +
-      '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">$'+Number(item.price||0).toFixed(2)+'</div>' +
-      (hasCustomLink ? '' : '<button data-wo-add-to-cart style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">Add to Cart</button>') +
+      '<div style="font-size:15px;font-weight:700;margin-top:auto;color:var(--wo-text,#1a1a1a);">'+woItemPriceLabel(item)+'</div>' +
+      (hasCustomLink ? '' : '<button data-wo-add-to-cart '+(woItemCanBuy(item)?'':'disabled aria-disabled="true" ')+'style="min-height:44px;padding:10px;background:var(--wo-accent,#1a1a1a);color:var(--wo-surface,#fff);border:none;border-radius:8px;font-weight:600;cursor:pointer;">'+(stockQty<=0?'Sold out':woPriceConfirmed(item)?'Add to Cart':'Price to be confirmed')+'</button>') +
       '<div class="wo-cart-data" style="display:none;"><span class="wo-d-slug">'+escapeHtml(item.id)+'</span><span class="wo-d-name">'+escapeHtml(item.name)+'</span><span class="wo-d-price">'+Number(item.price||0).toFixed(2)+'</span><img class="wo-d-image" src="'+escapeHtml(item.image||'')+'"><span class="wo-d-category">'+escapeHtml(item.category||'')+'</span><span class="wo-d-qty">'+(stockQty||1)+'</span></div></div>';
     if(hasCustomLink){
       // No modal, no cart line -- the whole card is just a real link to the
