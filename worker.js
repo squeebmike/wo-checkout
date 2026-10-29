@@ -469,14 +469,10 @@ async function handleCreateIntent(request, env, origin) {
   // identical numbered units sharing one id — locking the id would let only
   // one customer check out per colorway at a time. Those are exempted here
   // and instead governed purely by the capacity check below.
-  const reservationId = uid("res");
-  for (const it of items) {
-    if (!it.id || getRunDropKey(it.id)) continue;
-    const blocked = await isReserved(env, it.id, reservationId);
-    if (blocked) {
-      return json({ error: `"${it.name || it.id}" was just reserved by another order. Refresh your cart.` }, 409, corsHeaders(origin));
-    }
-  }
+  // A shopper retrying (back to fix the address, a dropped connection) keeps
+  // their own hold instead of being blocked by it (store, 2026-10-29: a
+  // customer couldn't get past shipping to the card page).
+  const reservationId = /^res_[a-z0-9]{6,40}$/i.test(String(body.reservationId || '')) ? String(body.reservationId) : uid("res");
 
   // Run-drop capacity check (e.g. Dougvana Limited Run 1) — blocks checkout
   // if this cart would push a limited run over its cap. "sold" counts orders
@@ -510,6 +506,9 @@ async function handleCreateIntent(request, env, origin) {
   // Stripe amount are computed below, so what's actually charged always
   // matches current real inventory data -- not whatever price the item
   // happened to show when it was added to the cart.
+  // Items with only one copy left get the exclusive hold below; the stock
+  // check here finds them.
+  const lastCopyIds = [];
   for (const it of items) {
     if (!it.id || getRunDropKey(it.id)) continue; // run-drop items aren't in Supabase inventory_items; capped separately above
     const qty = Math.max(1, parseInt(it.qty, 10) || 1);
@@ -517,8 +516,10 @@ async function handleCreateIntent(request, env, origin) {
       const result = await fetchInventoryApi(env, "/public/storefront/item?store_id=" + encodeURIComponent(getStoreId(env)) + "&id=" + encodeURIComponent(it.id));
       const item = result.data && result.data.item;
       if (!result.ok || !result.data || !result.data.ok || !item) {
-        return json({ error: `"${it.name || it.id}" doesn't have ${qty} available. Refresh your cart and try again.` }, 409, corsHeaders(origin));
+        // Taken off the site or sold out: say so, not "doesn't have 1 available".
+        return json({ error: `"${it.name || it.id}" is no longer available online. Remove it from your cart to continue.` }, 409, corsHeaders(origin));
       }
+      if (!item.dropship && Number(item.quantity || 0) <= 1) lastCopyIds.push(it.id);
       // Drop-ship items' stored quantity (999) is a "counts as in stock"
       // placeholder, not a real per-order limit -- cap against
       // DROPSHIP_MAX_QTY_PER_ORDER instead of trusting it. This is the
@@ -532,6 +533,18 @@ async function handleCreateIntent(request, env, origin) {
     } catch (e) {
       console.error("[WO] Stock check failed for", it.id, e.message);
       return json({ error: "Could not verify stock. Please try again." }, 502, corsHeaders(origin));
+    }
+  }
+
+  // The exclusive 15-minute hold is for one-of-a-kind items (a single card
+  // only one buyer can have). A comic with 17 copies used to get it too, so
+  // while one shopper was on the card page -- or after that same shopper
+  // went back and tried again -- everyone else was refused. Items with more
+  // copies are covered by the stock check above.
+  for (const id of lastCopyIds) {
+    if (await isReserved(env, id, reservationId)) {
+      const it = items.find(x => x.id === id) || {};
+      return json({ error: `"${it.name || id}" is in someone else's checkout right now. Try again in a few minutes.` }, 409, corsHeaders(origin));
     }
   }
 
@@ -580,7 +593,7 @@ async function handleCreateIntent(request, env, origin) {
   }
 
   await Promise.all(
-    items.filter((i) => i.id && !getRunDropKey(i.id)).map((it) =>
+    lastCopyIds.map((id) => ({ id })).map((it) =>
       env.WO_RESERVATIONS.put(
         "item:" + it.id,
         JSON.stringify({ reservationId, paymentIntentId: pi.id, at: Date.now() }),
@@ -1646,7 +1659,7 @@ function submitCheckoutStep1(){
   fetch(API_BASE + '/api/cart/create-intent', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({
-      items: cart, email: email,
+      items: cart, email: email, reservationId: _reservationId || '',
       fulfillment: { method: _fulfillMethod, name: name, phone: phone, email: email, shippingAddress: shippingAddress }
     })
   }).then(function(r){ return r.json(); }).then(function(d){
