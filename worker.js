@@ -700,6 +700,7 @@ async function handleConfirmOrder(request, env, origin) {
         fulfillment,
         shippingFeeCents: Math.round(Number((order.totals || {}).shipping || 0) * 100),
         mode: pi.livemode ? 'live' : 'test',
+        ...(/^article:[a-z0-9-]{3,120}$/.test(String(body.ref || '')) ? { referral: String(body.ref) } : {}),
       }),
     });
     if (!recordRes.ok) console.error('[WO] record-order failed:', recordRes.status, await recordRes.text().catch(() => ''));
@@ -1700,6 +1701,14 @@ function doMount(){
   _pe.mount('#wo-co-payment-element');
 }
 
+// The article that brought this buyer (2026-11-12): an article page on
+// themanapocket.com remembers itself in this browser; an order within 7 days
+// says so, so the dashboard can count website orders that came through it.
+function articleRef(){
+  try { var r = JSON.parse(localStorage.getItem('mp_article_ref') || 'null');
+    if (r && /^[a-z0-9-]{3,120}$/.test(r.s) && Date.now() - Number(r.at) < 7 * 864e5) return 'article:' + r.s; } catch (e) {}
+  return '';
+}
 // Step 2: actually charge the card, then record the completed order.
 function confirmCheckoutPayment(){
   if(!_stripe || !_elements){ showErr2('Payment form still loading, one sec.'); return; }
@@ -1722,7 +1731,8 @@ function confirmCheckoutPayment(){
         customer: { name: c.name, email: c.email },
         shipping: c.shippingAddress ? { address1: c.shippingAddress.line1, city: c.shippingAddress.city, state: c.shippingAddress.state, zip: c.shippingAddress.zip } : {},
         fulfillment: { method: _fulfillMethod, name: c.name, phone: c.phone, email: c.email, shippingAddress: c.shippingAddress },
-        amountCents: _checkoutAmountCents
+        amountCents: _checkoutAmountCents,
+        ref: articleRef()
       })
     }).then(function(r){
       return r.json().catch(function(){ return {}; }).then(function(data){
